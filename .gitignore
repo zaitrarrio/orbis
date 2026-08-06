@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+assets/train.log
+assets/_*.png
+out.gif
+live.gif
+i2v.gif
+hi.gif
+demo.html
