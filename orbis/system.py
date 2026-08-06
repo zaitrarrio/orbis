@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import torch
+import torch.nn as nn
 
+from .adapters.factory import build_backbone
 from .config import OrbisConfig
 from .device import get_device
-from .model import Generator
 from .superres import SuperResolution
 from .vae import ConvVAE
 
@@ -18,7 +19,7 @@ from .vae import ConvVAE
 class OrbisSystem:
     cfg: OrbisConfig
     vae: ConvVAE
-    generator: Generator
+    generator: nn.Module
     sr: SuperResolution
     distilled: bool = False
 
@@ -27,7 +28,7 @@ class OrbisSystem:
         cfg = cfg or OrbisConfig()
         torch.manual_seed(cfg.seed)
         vae = ConvVAE(cfg.vae, cfg.world)
-        gen = Generator(cfg.model, cfg.vae).build(cfg.latent_hw)
+        gen = build_backbone(cfg)
         sr = SuperResolution(cfg.sr, cfg.world)
         return OrbisSystem(cfg=cfg, vae=vae, generator=gen, sr=sr)
 
@@ -43,13 +44,25 @@ class OrbisSystem:
         return self
 
     def save(self, path: str) -> None:
-        torch.save({
+        payload: dict[str, Any] = {
             "config": self.cfg.to_dict(),
             "vae": self.vae.state_dict(),
-            "generator": self.generator.state_dict(),
             "sr": self.sr.state_dict(),
             "distilled": self.distilled,
-        }, path)
+            "backbone_type": self.cfg.backbone.type,
+        }
+        # Wan path: prefer LoRA/adapter bag; toy: full generator state
+        gen = self.generator
+        if hasattr(gen, "lora_state_dict") and self.cfg.backbone.type == "wan":
+            payload["lora"] = gen.lora_state_dict()
+            payload["generator"] = {
+                k: v for k, v in gen.state_dict().items()
+                if "lora_" in k or k.startswith("memory.")
+                or k.startswith("ref_proj.") or k == "identity_token"
+            }
+        else:
+            payload["generator"] = gen.state_dict()
+        torch.save(payload, path)
 
     @staticmethod
     def load(path: str, map_location=None) -> "OrbisSystem":
@@ -58,7 +71,10 @@ class OrbisSystem:
         cfg = OrbisConfig.from_dict(ckpt["config"])
         sys = OrbisSystem.build(cfg)
         sys.vae.load_state_dict(ckpt["vae"])
-        sys.generator.load_state_dict(ckpt["generator"])
+        if "lora" in ckpt and hasattr(sys.generator, "load_lora_state_dict"):
+            sys.generator.load_lora_state_dict(ckpt["lora"])
+        else:
+            sys.generator.load_state_dict(ckpt["generator"], strict=False)
         sys.sr.load_state_dict(ckpt["sr"])
         sys.distilled = ckpt.get("distilled", False)
         return sys.to(device).eval()

@@ -20,12 +20,12 @@ paper's versioned state reuse / compiled context.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Optional
 
 import torch
 import torch.nn as nn
 
+from .backbone import ModelContext  # noqa: F401 — re-export for callers
 from .config import ModelConfig, VAEConfig
 from .memory import MemoryBank
 from .modules import DiTBlock, FinalLayer, timestep_embedding
@@ -51,14 +51,6 @@ def unpatchify(x: torch.Tensor, p: int, c: int, gh: int, gw: int) -> torch.Tenso
     x = x.reshape(b, f, gh, gw, c, p, p)
     x = x.permute(0, 1, 4, 2, 5, 3, 6).reshape(b, f, c, gh * p, gw * p)
     return x
-
-
-@dataclass
-class ModelContext:
-    ctx_tokens: torch.Tensor      # (B, Nctx, dim) memory+ref+history, embedded
-    text_kv: torch.Tensor         # (B, text_len, dim)
-    pooled_text: torch.Tensor     # (B, dim)
-    batch: int
 
 
 class Generator(nn.Module):

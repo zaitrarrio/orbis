@@ -16,6 +16,15 @@ dependencies = [
   "torch>=2.7.0",
 ]
 
+[project.optional-dependencies]
+wan = [
+  "diffusers>=0.32.0",
+  "transformers>=4.45.0",
+  "accelerate>=1.0.0",
+  "imageio>=2.34.0",
+  "imageio-ffmpeg>=0.5.0",
+]
+
 [project.scripts]
 orbis = "orbis.cli:main"
 

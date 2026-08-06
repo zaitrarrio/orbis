@@ -19,6 +19,8 @@ import torch
 
 from .device import get_device
 from .flow import RectifiedFlow
+from .serve.drift import DriftState, stabilize_chunk
+from .serve.fifo import BoundedFIFO
 from .session import LiveSession
 from .system import OrbisSystem
 from .vae import frames_to_tensor, tensor_to_frames
@@ -49,6 +51,10 @@ class LiveEngine:
         self.vae = system.vae
         self._rng = torch.Generator(device=self.device)
         self._rng.manual_seed(seed)
+        self._drift = DriftState()
+        self._fifo: BoundedFIFO = BoundedFIFO(
+            capacity=getattr(self.cfg.serve, "fifo_capacity", 4))
+
 
     # -- latent <-> pixels ----------------------------------------------------
     @torch.no_grad()
@@ -121,9 +127,15 @@ class LiveEngine:
         cf = cfg.model.chunk_frames
         lc = cfg.vae.latent_channels
         lh, lw = cfg.latent_hw
-        # reference only seeds the very first chunk (empty history)
-        reference = s.reference if s.history is None else None
-        text_ids = s.active_ids.to(self.device)
+        # Referential integrity: Wan / anchor_reference keeps reference on every
+        # chunk; toy default still seeds only the first chunk (empty history).
+        anchor = getattr(self.cfg.backbone, "anchor_reference", False)
+        if anchor:
+            reference = s.reference
+        else:
+            reference = s.reference if s.history is None else None
+        # Prefer async-encoded prompt ids when version matches (serve path)
+        text_ids = s.resolve_text_ids().to(self.device)
         ctx = self.gen.encode_context(text_ids, s.history, reference,
                                       s.memory_state)
 
@@ -136,6 +148,14 @@ class LiveEngine:
         z = self.flow.sample(velocity_fn, (1, cf, lc, lh, lw), self.device,
                              steps=self.steps, noise=noise)
         frames = self.decode(z)
+        serve = getattr(self.cfg, "serve", None)
+        if serve is not None:
+            frames = stabilize_chunk(
+                frames, self._drift,
+                threshold=serve.drift_threshold,
+                blend=serve.drift_blend,
+                enabled=serve.drift_enabled,
+            )
         dt = time.time() - t0
 
         chunk = Chunk(index=s.chunk_index, version=s.active_version,
@@ -149,11 +169,21 @@ class LiveEngine:
     # -- streaming ------------------------------------------------------------
     def stream(self, s: LiveSession, n_chunks: int,
                superres: bool = False) -> Iterator[Chunk]:
+        """Generate chunks into a bounded FIFO and yield in delivery order.
+
+        Never drops frames: when the FIFO is full, the oldest chunk is delivered
+        before enqueueing the next (progressive decode backpressure).
+        """
         for _ in range(n_chunks):
             chunk = self.generate_chunk(s)
             if superres:
                 chunk.hr_frames = self.upscale(chunk.frames)
-            yield chunk
+            while self._fifo.full:
+                oldest = self._fifo.pop()
+                if oldest is not None:
+                    yield oldest
+            self._fifo.push(chunk)
+        yield from self._fifo.drain()
 
     @torch.no_grad()
     def upscale(self, frames: np.ndarray) -> np.ndarray:

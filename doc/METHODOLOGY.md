@@ -462,27 +462,38 @@ Key configuration (`orbis/config.py`):
 
 | Paper mechanism | Module(s) |
 |---|---|
-| Unified live formulation `p_θ(z_k \| H_k, c_k, r_k)` | `model.py` |
+| Unified live formulation `p_θ(z_k \| H_k, c_k, r_k)` | `model.py`, `adapters/wan_adapter.py` |
 | Rectified-flow objective (Eq. 1) | `flow.py` |
 | Bounded multi-scale memory | `memory.py` |
-| Progressive training (Fig. 3) | `train.py`, `dataset.py` |
+| Progressive training (Fig. 3) | `train.py`, `dataset.py`, `data/video_dataset.py` |
 | Few-step distillation | `distill.py` |
+| Guidance distillation | `posttrain/guidance.py` |
+| EMA consistency distillation | `posttrain/consistency.py` |
+| Self-forcing DMD | `posttrain/self_forcing.py` |
+| GRPO + world-model consistency | `posttrain/grpo.py`, `posttrain/rewards.py` |
 | Live versioned prompt switching / rolling summary | `session.py`, `engine.py` |
-| Delivered-video runtime (T2V/I2V/V2V, progressive delivery) | `engine.py` |
+| Async prompt encode + version gate | `session.py` |
+| Delivered-video runtime (T2V/I2V/V2V, progressive delivery) | `engine.py`, `serve/fifo.py` |
+| Content-adaptive drift stabilization | `serve/drift.py` |
 | Streaming super-resolution | `superres.py` |
 | Latent video model | `vae.py` |
+| Wan2.1 real-scale backbone + LoRA | `adapters/wan_adapter.py`, `adapters/factory.py` |
 | Multilingual prompting | `text.py`, `vocab.py` |
 | Event-based evaluation | `eval.py` |
 
 ## 15. Limitations & honest scope
 
-- A reference implementation of the *mechanisms*, not the trained Orbis model — no
-  shared weights or data.
-- Shape and precise direction fidelity are limited at this scale.
-- Bounded memory's long-horizon benefit is architectural in this toy world.
-- The GRPO reward-alignment and physics-aware (world-model consistency) stages of
-  the paper's post-training are described but not implemented; distillation stands
-  in for the few-step post-training path.
+- A reference implementation of the *mechanisms*, not the trained Orbis model —
+  no shared weights or data with the paper.
+- **Toy path** (`backbone.type=toy`): small synthetic world for fast contract
+  tests.
+- **Wan path** (`backbone.type=wan`): real-scale geometry (~480×832) and the full
+  post-training stack (guidance → EMA consistency → self-forcing DMD → GRPO with
+  world-model + reference identity rewards). Official Wan2.1 weights are optional
+  (`--load-hf`); by default a structural Wan-scale DiT stub + LoRA trains the
+  methodology without multi-GB downloads.
+- Shape and precise direction fidelity remain limited on the toy world.
+- Multi-GPU Ulysses / W8A8 production kernels are out of scope for this pass.
 
 ## References
 
@@ -490,4 +501,5 @@ The primary source is the archived PDF in `doc/references/`. Works cited in the
 summary above (CausVid, Self-Forcing, Rolling/Causal Forcing, Oasis, LongLive,
 Matrix-Game 2.0, Krea Realtime, Helios, Vidu S1, FramePack, FAR, MemFlow, VideoSSM,
 FadeMem, Echo-Infinity, DOVER, VideoAlign, HPSv3, and others) appear in the
-paper's own reference list (pp. 12–14 of the archived PDF).
+paper's own reference list (pp. 12–14 of the archived PDF). Wan2.1
+(arXiv:2503.20314) is the open backbone used for the real-scale path.

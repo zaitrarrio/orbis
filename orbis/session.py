@@ -9,6 +9,9 @@ output clock.  The central rule from the paper is realised here exactly:
 
 A *rolling prompt summary* (``rolling_summary``) carries established entities so
 a partial update ("moving up") keeps the rest of the scene ("the red triangle").
+
+Async prompt encoding: encodings are stamped with a prompt version; stale async
+results cannot overwrite the active condition (serve co-design).
 """
 
 from __future__ import annotations
@@ -31,6 +34,15 @@ class PromptUpdate:
 
 
 @dataclass
+class EncodedPrompt:
+    """Version-guarded text encoding produced asynchronously."""
+
+    version: int
+    ids: torch.Tensor
+    session_epoch: int = 0
+
+
+@dataclass
 class LiveSession:
     cfg: OrbisConfig
     mode: str = "t2v"
@@ -41,6 +53,9 @@ class LiveSession:
     rolling_summary: Dict[str, str] = field(default_factory=dict)
     pending: Optional[PromptUpdate] = None
     _version_counter: int = 0
+    # async encode bag (version must match active_version to apply)
+    _async_encoded: Optional[EncodedPrompt] = None
+    _session_epoch: int = 0
     # persistent visual state
     chunk_index: int = 0
     committed_frames: int = 0
@@ -60,6 +75,8 @@ class LiveSession:
         self.active_ids = self._encode(self.active_controls)
         self.active_version = 0
         self.pending = None
+        self._async_encoded = EncodedPrompt(
+            version=0, ids=self.active_ids, session_epoch=self._session_epoch)
 
     def set_prompt(self, text: str) -> PromptUpdate:
         """Queue a prompt update; it will be admitted at the next chunk boundary.
@@ -73,7 +90,31 @@ class LiveSession:
                            controls=dict(self.rolling_summary),
                            text=text, submit_chunk=self.chunk_index)
         self.pending = upd            # latest pending overwrites stale pending
+        # Kick async encode for the *pending* version (may complete before admit)
+        self.prefetch_encode(upd.version, upd.controls)
         return upd
+
+    def prefetch_encode(self, version: int, controls: Dict[str, str]) -> EncodedPrompt:
+        """Encode prompt ids for ``version`` (sync stand-in for async worker)."""
+        enc = EncodedPrompt(
+            version=version,
+            ids=self._encode(controls),
+            session_epoch=self._session_epoch,
+        )
+        self._async_encoded = enc
+        return enc
+
+    def apply_async_encoding(self, enc: EncodedPrompt) -> bool:
+        """Apply an async encoding only if it matches the active version/epoch.
+
+        Stale work (old version or previous session epoch) is rejected.
+        """
+        if enc.session_epoch != self._session_epoch:
+            return False
+        if enc.version != self.active_version:
+            return False
+        self.active_ids = enc.ids
+        return True
 
     def admit_pending(self) -> Optional[int]:
         """Admit the latest pending prompt at a chunk boundary.  Returns the
@@ -81,11 +122,31 @@ class LiveSession:
         if self.pending is None:
             return None
         self.active_controls = dict(self.pending.controls)
-        self.active_ids = self._encode(self.active_controls)
         self.active_version = self.pending.version
+        # Prefer version-matched async encoding; fall back to sync encode
+        if (self._async_encoded is not None
+                and self._async_encoded.version == self.active_version
+                and self._async_encoded.session_epoch == self._session_epoch):
+            self.active_ids = self._async_encoded.ids
+        else:
+            self.active_ids = self._encode(self.active_controls)
+            self._async_encoded = EncodedPrompt(
+                version=self.active_version, ids=self.active_ids,
+                session_epoch=self._session_epoch)
         v = self.pending.version
         self.pending = None
         return v
+
+    def resolve_text_ids(self) -> torch.Tensor:
+        """Text ids for the current active condition (version-guarded)."""
+        if self.active_ids is None:
+            self.active_ids = self._encode(self.active_controls)
+        return self.active_ids
+
+    def bump_session_epoch(self) -> None:
+        """Invalidate in-flight async encodings (e.g. new live session)."""
+        self._session_epoch += 1
+        self._async_encoded = None
 
     @property
     def active_prompt(self) -> str:

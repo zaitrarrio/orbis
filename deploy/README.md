@@ -46,3 +46,44 @@ Mirror fields from `deploy/runpod/template.json`.
 
 Repo **Settings → Packages** (or the package page after the first workflow run) →
 package visibility **Public**, so RunPod/Vast can pull without a token.
+
+## Wan2.1 live training (real-scale path)
+
+The Live methodology on Wan uses a structural Wan-scale DiT + LoRA by default
+(`backbone.wan_stub=True`). Official weights are **not** shipped in git.
+
+### Hugging Face cache on the pod volume
+
+Mount a persistent volume at `/workspace` and cache weights under
+`/workspace/hf-cache`:
+
+```bash
+export HF_HOME=/workspace/hf-cache
+export HUGGINGFACE_HUB_CACHE=/workspace/hf-cache
+# optional extras for Diffusers Wan + video IO
+uv sync --extra wan
+```
+
+Default checkpoint id: `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` (see
+`orbis.config.BackboneConfig.checkpoint_path`). Prefer **H100** for 14B; **4090 /
+5090** for the 1.3B stub/LoRA path.
+
+### Train
+
+```bash
+# Full methodology smoke (CI-sized Wan stub geometry):
+uv run python scripts/train-live-wan.py orbis-wan.pt 1.0 --smoke
+
+# Real-scale config (480x832); still stub unless --load-hf:
+uv run python scripts/train-live-wan.py orbis-wan.pt 0.1
+
+# Attempt to attach official Diffusers Wan weights:
+uv run python scripts/train-live-wan.py orbis-wan.pt 0.1 --load-hf
+
+# Toy path (unchanged):
+uv run python scripts/train_all.py orbis.pt 0.1
+uv run python scripts/train_all.py orbis-wan-smoke.pt 0.1 --backbone wan
+```
+
+Clips for mid-training: put `manifest.jsonl` + videos under e.g.
+`/workspace/data/openvid` and pass `--data /workspace/data/openvid`.

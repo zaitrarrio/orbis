@@ -41,15 +41,16 @@ The interactive console (`orbis demo`, a single self-contained HTML file):
 
 | Paper mechanism | Where it lives | What it does here |
 |---|---|---|
-| Unified live-video formulation `p_θ(z_k \| H_k, c_k, r_k)` | `orbis/model.py` | Chunk-wise DiT predicting a rectified-flow velocity for the current latent chunk, conditioned on history, instruction, reference and memory. |
+| Unified live-video formulation `p_θ(z_k \| H_k, c_k, r_k)` | `orbis/model.py`, `orbis/adapters/wan_adapter.py` | Chunk-wise DiT (toy or Wan-scale + LoRA) predicting rectified-flow velocity, conditioned on history, instruction, reference and memory. |
 | Rectified-flow objective (Eq. 1) | `orbis/flow.py` | `z_σ=(1−σ)z+σε`, target `ε−z`, Euler sampler. |
 | Bounded multi-scale memory | `orbis/memory.py` | Recency window at native granularity + a **fixed-capacity** persistent state updated by gated cross-attention; cost independent of rollout length. |
-| Progressive training (Fig. 3) | `orbis/train.py` | VAE → bidirectional short-clip prior → streaming adaptation with history augmentation. |
-| Few-step distillation | `orbis/distill.py` | A frozen many-step teacher supervises a few-step student for the real-time path. |
-| Live control: versioned prompt switching | `orbis/session.py` | Updates admitted at the next **uncommitted** chunk boundary; delivered frames never revised; rolling prompt summary preserves established entities. |
-| Delivered-video runtime | `orbis/engine.py` | Streaming loop, T2V/I2V/V2V, progressive per-chunk delivery, versioned state reuse. |
+| Progressive training (Fig. 3) | `orbis/train.py`, `orbis/data/video_dataset.py` | VAE → bidirectional short-clip prior → streaming adaptation → event mid-training. |
+| Guidance / EMA / self-forcing / GRPO | `orbis/posttrain/` | Full few-step post-training with **world-model consistency** and reference-identity rewards. |
+| Few-step distillation (toy) | `orbis/distill.py` | Frozen many-step teacher supervises a few-step student. |
+| Live control: versioned prompt switching | `orbis/session.py` | Updates admitted at the next **uncommitted** chunk boundary; async encode version gate; delivered frames never revised. |
+| Delivered-video runtime | `orbis/engine.py`, `orbis/serve/` | Streaming loop, bounded FIFO, drift guard, T2V/I2V/V2V, reference anchoring on Wan. |
 | Streaming super-resolution | `orbis/superres.py` | Reference-aware, within-chunk (no cross-chunk autoregression) refinement. |
-| Latent video model | `orbis/vae.py` | Small convolutional latent autoencoder. |
+| Latent video model | `orbis/vae.py` | Convolutional latent autoencoder. |
 | Multilingual prompting | `orbis/text.py`, `orbis/vocab.py` | Synonyms in several languages collapse to canonical tokens. |
 | Event-based evaluation | `orbis/eval.py` | Whole-rollout metrics: prompt alignment, temporal stability, switch compliance, long-horizon drift. |
 
@@ -76,6 +77,18 @@ uv run orbis generate --prompt "a red circle moving right" --superres --out hi.g
 uv run orbis eval
 uv run orbis demo --out demo.html
 ```
+
+### Wan live methodology (real-scale path)
+
+```bash
+# CI-sized Wan stub + full post-training stack
+uv run python scripts/train-live-wan.py orbis-wan.pt 1.0 --smoke
+
+# Real-scale 480x832 config (LoRA stub; add --load-hf for Diffusers Wan)
+uv run python scripts/train-live-wan.py orbis-wan.pt 0.1
+```
+
+See [`deploy/README.md`](deploy/README.md) for HF cache + RunPod/Vast notes.
 
 One-shot without a shell:
 
@@ -144,15 +157,18 @@ Covered: world determinism and prompt switching; multilingual parsing and the
 rolling summary; PNG/GIF encoders; patchify round-trip; rectified-flow endpoints
 and a closed-form sampler check; generator shapes and context-reuse equivalence;
 **bounded** memory and streaming state; the prompt-versioning contract; T2V/I2V/V2V
-runs; super-resolution upscaling; checkpoint round-trip.
+runs; super-resolution upscaling; checkpoint round-trip; **Wan adapter** shapes,
+reference anchoring, switch immutability; async prompt version guard; FIFO /
+drift; world-model rewards; event mid-train batches.
 
 ## Honest scope
 
 This is a *reference implementation of the mechanisms*, not the trained Orbis
 model. It shares no weights or data with the paper; numbers here are on the toy
-benchmark and are not comparable to the paper's results. The value is a compact,
-readable, end-to-end system where each idea in the paper is a component you can
-read, run, test, and modify.
+benchmark and are not comparable to the paper's results. The **Wan path** adds a
+trainable real-scale backbone (Wan2.1-compatible DiT + LoRA) and the full
+post-training stack with consistency-first rewards; official Wan weights remain
+optional downloads (see `deploy/README.md`).
 
 ## Layout
 
