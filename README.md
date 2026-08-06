@@ -12,6 +12,10 @@ contribution: the *mechanisms* of a Live Model.** Every core idea is implemented
 as a real, trainable, testable component at a toy scale that runs end-to-end on a
 laptop CPU in a few minutes.
 
+📄 **A full write-up of the derivation, the math, and the paper→code mapping is in
+[`doc/METHODOLOGY.md`](doc/METHODOLOGY.md)** (the source paper is archived under
+`doc/references/`).
+
 To make text→video alignment and mid-rollout prompt switching *visible* rather
 than a matter of faith, the model is grounded in a small prompt-controlled world:
 a colored shape moving in a direction. The instruction determines the subject,
