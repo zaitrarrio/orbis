@@ -97,8 +97,9 @@ section{padding:52px 0;border-bottom:1px solid var(--line)}
 .dot{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:middle;margin-right:5px}
 
 /* gallery */
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px}
+.grid>*{min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;min-width:0}
 .card .screen{aspect-ratio:1/1}
 .card .cap{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:8px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -113,7 +114,8 @@ section{padding:52px 0;border-bottom:1px solid var(--line)}
 
 /* metrics */
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
-.tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+.tiles>*{min-width:0}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
 .tile .lab{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em}
 .tile .num{font-size:30px;font-weight:700;margin-top:6px;font-variant-numeric:tabular-nums}
 .tile .bar{height:6px;border-radius:4px;background:var(--panel2);margin-top:10px;overflow:hidden}
@@ -202,7 +204,7 @@ footer .mono{font-size:12px}
        motion are read from the instruction; state (position, velocity) is carried
        across chunks by the bounded history + memory.</p>
   </div>
-  <div class="grid" id="gallery"></div>
+  <div class="grid" id="galleryGrid"></div>
 </section>
 
 <section id="modes">
@@ -346,7 +348,7 @@ document.getElementById('segBase').onclick=()=>pick('baseline');
 setInterval(swTick,1000/SW.fps); swRender();
 
 /* ---------- gallery ---------- */
-const gal=document.getElementById('gallery');
+const gal=document.getElementById('galleryGrid');
 DATA.scenes.forEach(s=>{
   const el=document.createElement('div');el.className='card';
   el.innerHTML=`<div class="screen"><img class="px" alt="${s.prompt}"></div>
