@@ -48,12 +48,17 @@ Mirror fields from `deploy/runpod/template.json`.
 # .env needs VAST_API_KEY (never commit .env)
 cp .env.example .env   # then fill VAST_API_KEY
 
-bash scripts/deploy/vast-create.sh    # rent RTX 4090 by default, run smoke onstart
+bash scripts/deploy/vast-create.sh    # rent RTX 4090; slim PyTorch image + clone onstart
 bash scripts/deploy/vast-test.sh      # SSH-poll until /workspace/.orbis_smoke_ok
 bash scripts/deploy/vast-destroy.sh --all-labelled   # stop billing
 ```
 
-Overrides: `VAST_GPU_NAME='RTX 5090'`, `VAST_MAX_DPH=2.0`, `VAST_LABEL=orbis-gpu`.
+Defaults use `pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime` (fast pull) and clone
+`main` in onstart — avoids stalling on the large GHCR `orbis:cuda128` devel image.
+Force GHCR with `ORBIS_VAST_USE_GHCR=1`.
+
+Overrides: `VAST_GPU_NAME='RTX 5090'`, `VAST_MAX_DPH=2.0`, `VAST_MIN_INET=500`,
+`VAST_LABEL=orbis-gpu`, `VAST_IMAGE=...`.
 SSH key default: `~/.ssh/id_strobe_vast` (`VAST_SSH_KEY` to override).
 
 ## Make the GHCR package public (optional)

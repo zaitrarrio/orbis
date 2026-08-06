@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# Launch a Vast.ai GPU instance running ghcr.io/zaitrarrio/orbis:cuda128.
+# Launch a Vast.ai GPU instance for Orbis smoke train/test.
 #
 # Pattern mirrors strobe/scripts/deploy/vast-create.sh:
 #   search offers → rent → onstart smoke train/test → SSH details.
 #
+# Default image is a slim public PyTorch CUDA runtime (fast pull). The custom
+# GHCR orbis:cuda128 image is CUDA-devel based and often stalls on marketplace
+# hosts — set ORBIS_VAST_USE_GHCR=1 to force it.
+#
 # Requires: VAST_API_KEY in .env
 # Optional: VAST_GPU_NAME (default "RTX 4090"), VAST_NUM_GPUS, VAST_MAX_DPH,
-#           VAST_DISK_GB, VAST_MIN_INET, VAST_LABEL, VAST_IMAGE_LOGIN, HF_TOKEN
+#           VAST_DISK_GB, VAST_MIN_INET, VAST_LABEL, VAST_IMAGE_LOGIN, HF_TOKEN,
+#           ORBIS_VAST_USE_GHCR, VAST_IMAGE (full image:tag override)
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
@@ -22,8 +27,18 @@ gpu_name="${VAST_GPU_NAME:-RTX 4090}"
 num_gpus="${VAST_NUM_GPUS:-1}"
 max_dph="${VAST_MAX_DPH:-1.5}"
 disk_gb="${VAST_DISK_GB:-50}"
-min_inet="${VAST_MIN_INET:-200}"
+# Higher default: slow downlink is what stuck prior GHCR pulls.
+min_inet="${VAST_MIN_INET:-500}"
 label="${VAST_LABEL:-orbis-gpu}"
+
+if [[ -n "${VAST_IMAGE:-}" ]]; then
+  image="${VAST_IMAGE}"
+elif [[ "${ORBIS_VAST_USE_GHCR:-0}" == "1" ]]; then
+  image="${GHCR_IMAGE}:${GHCR_TAG}"
+else
+  # ~slim runtime; onstart clones orbis + uv sync (avoids multi-GB devel pulls)
+  image="${ORBIS_VAST_SLIM_IMAGE:-pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime}"
+fi
 
 query="$(jq -n \
   --arg gpu "$gpu_name" \
@@ -47,7 +62,7 @@ query="$(jq -n \
     order: [["dph_total", "asc"]]
   }')"
 
-echo "searching offers: ${num_gpus}x ${gpu_name} <= \$${max_dph}/hr, >=${disk_gb}GB disk..."
+echo "searching offers: ${num_gpus}x ${gpu_name} <= \$${max_dph}/hr, >=${disk_gb}GB disk, inet>=${min_inet}..."
 offers="$(curl -sS --max-time 60 -X POST "${api}/bundles" "${auth[@]}" -d "$query")"
 
 if ! echo "$offers" | jq -e '.offers' >/dev/null 2>&1; then
@@ -64,32 +79,35 @@ if [[ "$offer_count" -eq 0 ]]; then
 fi
 
 echo "top matches:"
-echo "$offers" | jq -r '.offers[:5][] | "  id=\(.id)  \(.num_gpus)x\(.gpu_name)  \(.gpu_ram//0)MB  $\(.dph_total|.*1000|round/1000)/hr  \(.geolocation // "?")  rel=\(.reliability|.*1000|round/1000)"'
+echo "$offers" | jq -r '.offers[:5][] | "  id=\(.id)  \(.num_gpus)x\(.gpu_name)  \(.gpu_ram//0)MB  $\(.dph_total|.*1000|round/1000)/hr  \(.geolocation // "?")  inet=\(.inet_down // 0|floor)  rel=\(.reliability|.*1000|round/1000)"'
 
 offer_id="$(echo "$offers" | jq -r '.offers[0].id')"
 offer_dph="$(echo "$offers" | jq -r '.offers[0].dph_total')"
 echo "renting offer ${offer_id} at \$${offer_dph}/hr"
+echo "image: ${image}"
 
 # Under ssh_* runtypes Vast replaces PID 1 with sshd — image CMD never runs.
-# onstart is the only bootstrap hook. Smoke train + generate, then stay up for SSH.
+# onstart bootstraps Orbis from GitHub (slim base) then smoke-tests.
 onstart="$(cat <<'ONSTART'
 set -eu
 mkdir -p /var/log /workspace
 exec >/var/log/orbis-smoke.log 2>&1
 echo "[orbis] onstart $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 nvidia-smi || true
-# Always exercise latest main from GitHub so smoke does not wait on GHCR rebuild.
+
+# uv may be missing on slim pytorch bases
+if ! command -v uv >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/0.8.4/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
 rm -rf /tmp/orbis-src
 git clone --depth 1 https://github.com/zaitrarrio/orbis.git /tmp/orbis-src
 cd /tmp/orbis-src
-if [ -f /workspace/.venv/bin/python ]; then
-  export PATH="/workspace/.venv/bin:${PATH}"
-  export VIRTUAL_ENV=/workspace/.venv
-else
-  uv sync --frozen --group dev || uv sync --group dev
-  export PATH="$(pwd)/.venv/bin:${PATH}"
-  export VIRTUAL_ENV="$(pwd)/.venv"
-fi
+uv sync --frozen --group dev || uv sync --group dev
+export PATH="$(pwd)/.venv/bin:${PATH}"
+export VIRTUAL_ENV="$(pwd)/.venv"
+
 python - <<'PY'
 import torch
 print("torch", torch.__version__, "cuda", torch.cuda.is_available())
@@ -127,7 +145,7 @@ add_env HF_HOME /workspace/hf-cache
 add_env HUGGINGFACE_HUB_CACHE /workspace/hf-cache
 
 payload="$(jq -n \
-  --arg image "${GHCR_IMAGE}:${GHCR_TAG}" \
+  --arg image "$image" \
   --arg label "$label" \
   --arg onstart "$onstart" \
   --argjson env "$env_obj" \
@@ -158,37 +176,37 @@ fi
 instance_id="$(echo "$resp" | jq -r '.new_contract')"
 echo "created Vast instance id=${instance_id} label=${label}"
 
-# Persist ids into .env for later SSH / destroy (never commit .env)
 if [[ -f .env ]]; then
-  grep -v '^VAST_INSTANCE_ID=' .env | grep -v '^VAST_INSTANCE_IP=' | grep -v '^VAST_SSH_PORT=' >.env.tmp || true
-  {
-    cat .env.tmp
-    echo "VAST_INSTANCE_ID=${instance_id}"
-  } >.env
-  rm -f .env.tmp
+  tmp="$(mktemp)"
+  grep -vE '^(VAST_INSTANCE_ID|VAST_INSTANCE_IP|VAST_SSH_PORT)=' .env >"$tmp" || true
+  echo "VAST_INSTANCE_ID=${instance_id}" >>"$tmp"
+  mv "$tmp" .env
 fi
 
-echo "waiting for instance to start (image pull may take several minutes)..."
+echo "waiting for instance to start (slim image pull should be minutes, not tens)..."
 for _ in $(seq 1 90); do
   detail="$(curl -sS --max-time 30 "${api}/instances/${instance_id}/" "${auth[@]}" \
     | tr -d '\000-\010\013\014\016-\037' || true)"
-  status="$(echo "$detail" | jq -r '.instances.actual_status // empty' 2>/dev/null || true)"
+  # Prefer python-safe parse if jq chokes on residual controls
+  st="$(echo "$detail" | jq -r '.instances.actual_status // empty' 2>/dev/null || true)"
   ip="$(echo "$detail" | jq -r '.instances.public_ipaddr // empty' 2>/dev/null || true)"
   ssh_port="$(echo "$detail" | jq -r '.instances.ports."22/tcp"[0].HostPort // empty' 2>/dev/null || true)"
-  if [[ "$status" == "running" && -n "$ip" ]]; then
+  if [[ "$st" == "running" && -n "$ip" && -n "$ssh_port" ]]; then
     ip="${ip%/}"
-    echo "instance running: ${ip}  ssh_port=${ssh_port:-?}"
     if [[ -f .env ]]; then
-      grep -v '^VAST_INSTANCE_IP=' .env | grep -v '^VAST_SSH_PORT=' >.env.tmp || true
+      tmp="$(mktemp)"
+      grep -vE '^(VAST_INSTANCE_ID|VAST_INSTANCE_IP|VAST_SSH_PORT)=' .env >"$tmp" || true
       {
-        cat .env.tmp
+        cat "$tmp"
+        echo "VAST_INSTANCE_ID=${instance_id}"
         echo "VAST_INSTANCE_IP=${ip}"
-        echo "VAST_SSH_PORT=${ssh_port:-22}"
+        echo "VAST_SSH_PORT=${ssh_port}"
       } >.env
-      rm -f .env.tmp
+      rm -f "$tmp"
     fi
     ssh_key="${VAST_SSH_KEY:-$HOME/.ssh/id_strobe_vast}"
-    echo "  ssh:     ssh -i ${ssh_key} -p ${ssh_port:-22} root@${ip}"
+    echo "instance running: ${ip}  ssh_port=${ssh_port}"
+    echo "  ssh:     ssh -i ${ssh_key} -p ${ssh_port} root@${ip}"
     echo "  logs:    ssh ... 'tail -f /var/log/orbis-smoke.log'"
     echo "  destroy: bash scripts/deploy/vast-destroy.sh ${instance_id}"
     echo "  test:    bash scripts/deploy/vast-test.sh"
