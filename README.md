@@ -23,6 +23,10 @@ already-delivered past is immutable.
 
 ![switch demo](assets/switch_demo.gif)
 
+The interactive console (`orbis demo`, a single self-contained HTML file):
+
+![console](assets/console.png)
+
 ---
 
 ## What maps to what
