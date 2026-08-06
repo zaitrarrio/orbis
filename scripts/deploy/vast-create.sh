@@ -116,8 +116,9 @@ echo "[orbis] venv with system-site-packages (reuse image torch)"
 python -m venv --system-site-packages .venv
 # shellcheck disable=SC1091
 . .venv/bin/activate
-# Install project + test deps only — do NOT re-download CUDA torch via uv lock
-uv pip install -e . 'numpy>=1.23,<2' pytest
+# Do not resolve/install torch from pyproject — image already has CUDA torch
+uv pip install --no-deps -e .
+uv pip install 'numpy>=1.23,<2' pytest
 
 python - <<'PY'
 import torch
