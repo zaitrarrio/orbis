@@ -4,9 +4,9 @@ A faithful reference implementation of the *Live Model* from
 [**Visko Orbis 1.0: A Live Model for Real-Time Interactive Long Video
 Generation**](https://arxiv.org/pdf/2607.26694).
 
-**Development and deployment target Linux + NVIDIA GPU** (Docker locally; **RunPod**
-and **Vast.ai** in the cloud). Primary GPUs: **RTX 4090**, **RTX 5090**, **H100**
-(CUDA 12.8 / PyTorch cu128). See [`deploy/README.md`](deploy/README.md).
+**Development and deployment target Linux + NVIDIA GPU** (Docker locally; publish via
+**GitHub Actions → GHCR**; run on **RunPod** / **Vast.ai**). Primary GPUs: **RTX 4090**,
+**RTX 5090**, **H100** (CUDA 12.8 / PyTorch cu128). See [`deploy/README.md`](deploy/README.md).
 
 The production system generates native 832×480 video, streams it to 4K at 24 FPS
 across a multi-GPU serving engine, and is trained on a large curated video
@@ -84,7 +84,7 @@ docker compose run --rm orbis uv run pytest
 docker compose run --rm orbis uv run python scripts/train_all.py orbis.pt 0.1
 ```
 
-Cloud: push the image and use the RunPod / Vast templates under [`deploy/`](deploy/).
+Cloud: merge to `main` publishes `ghcr.io/zaitrarrio/orbis:cuda128`; point RunPod / Vast at that image ([`deploy/`](deploy/)).
 
 ## The live contract, precisely
 
@@ -161,6 +161,7 @@ orbis/                 Python package (CUDA-first via device.py)
 scripts/train_all.py
 tests/   assets/   doc/
 Dockerfile   docker-compose.yml
-deploy/                RunPod + Vast templates
+deploy/                RunPod + Vast (GHCR image from this repo)
+.github/workflows/     docker-publish → ghcr.io/zaitrarrio/orbis
 .cursor/rules/         Linux+GPU project rule
 ```

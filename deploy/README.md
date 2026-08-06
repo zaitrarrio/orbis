@@ -1,38 +1,48 @@
-# Deploy: RunPod + Vast.ai
+# Deploy: GitHub → GHCR → RunPod / Vast
 
-Orbis ships as a **Linux + CUDA 12.8** Docker image. Prefer **RTX 4090**, **RTX 5090**, or **H100** pods. Host driver should be **≥ 570** for CUDA 12.8 / Blackwell.
+Source of truth is this repository: [zaitrarrio/orbis](https://github.com/zaitrarrio/orbis).
 
-## Build & push
+Pushes to `main` (and version tags `v*`) build the Linux + CUDA 12.8 image via
+[`.github/workflows/docker-publish.yml`](../.github/workflows/docker-publish.yml)
+and publish to **GitHub Container Registry**:
+
+| Tag | Meaning |
+|-----|---------|
+| `ghcr.io/zaitrarrio/orbis:cuda128` | Latest `main` (stable deploy tag) |
+| `ghcr.io/zaitrarrio/orbis:main` | Branch tip |
+| `ghcr.io/zaitrarrio/orbis:sha-<short>` | Exact commit |
+| `ghcr.io/zaitrarrio/orbis:vX.Y.Z` | Release tag |
+
+Prefer **RTX 4090**, **RTX 5090**, or **H100**. Host driver **≥ 570** for CUDA 12.8 / Blackwell.
+
+## Local (same image definition)
 
 ```bash
-docker build -t YOUR_REGISTRY/orbis:cuda128 .
-docker push YOUR_REGISTRY/orbis:cuda128
-```
-
-Local GPU check:
-
-```bash
+docker compose build
 docker compose run --rm orbis nvidia-smi
-docker compose run --rm orbis python -c "import torch; print(torch.cuda.get_device_name(0))"
 ```
 
 ## RunPod
 
-1. Create a **Pod template** with image `YOUR_REGISTRY/orbis:cuda128`.
-2. GPU: RTX 4090 / RTX 5090 / H100 (match VRAM to workload).
-3. Container disk ≥ 40 GB; volume mount `/workspace` for checkpoints.
-4. Start command (interactive) or override, e.g.:
+1. Pod template image: `ghcr.io/zaitrarrio/orbis:cuda128`
+2. If the package is private: add a GHCR pull credential / registry auth in the template.
+3. GPU: 4090 / 5090 / H100 · container disk ≥ 40 GB · volume `/workspace`
+4. Optional start command:
 
 ```bash
 bash -lc 'cd /workspace && uv run python scripts/train_all.py orbis.pt 0.1'
 ```
 
-See `deploy/runpod/template.json` for field defaults you can mirror in the console/API.
+Mirror fields from `deploy/runpod/template.json`.
 
 ## Vast.ai
 
-1. Create a template with the same image and `CUDA` filter for 4090 / 5090 / H100.
-2. Launch mode: **Entrypoint** (keeps image `CMD`) or **SSH** with `deploy/vast/onstart.sh` pasted into **On-start**.
-3. Docker options example: `-e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility`
+1. Template image: `ghcr.io/zaitrarrio/orbis:cuda128` (same GHCR tags as above).
+2. Filter offers for 4090 / 5090 / H100.
+3. **Entrypoint** launch keeps the image `CMD`; **SSH/Jupyter** → paste `deploy/vast/onstart.sh` into On-start.
+4. Docker options: see `deploy/vast/template.env`. Private GHCR: configure registry login on the account/template.
 
-On SSH/Jupyter modes Vast replaces the entrypoint — always run `onstart.sh` (or call your train/serve command from it).
+## Make the GHCR package public (optional)
+
+Repo **Settings → Packages** (or the package page after the first workflow run) →
+package visibility **Public**, so RunPod/Vast can pull without a token.

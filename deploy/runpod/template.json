@@ -1,6 +1,6 @@
 {
   "name": "orbis-cuda128",
-  "imageName": "YOUR_REGISTRY/orbis:cuda128",
+  "imageName": "ghcr.io/zaitrarrio/orbis:cuda128",
   "category": "NVIDIA",
   "containerDiskInGb": 50,
   "volumeInGb": 50,
@@ -12,5 +12,5 @@
     "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
     "PYTHONUNBUFFERED": "1"
   },
-  "readme": "Orbis Live Model — Linux CUDA 12.8. Prefer RTX 4090, RTX 5090, or H100. Driver ≥ 570."
+  "readme": "Orbis from github.com/zaitrarrio/orbis — image ghcr.io/zaitrarrio/orbis:cuda128. Prefer RTX 4090, RTX 5090, or H100. Driver ≥ 570."
 }
