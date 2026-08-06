@@ -87,7 +87,8 @@ echo "renting offer ${offer_id} at \$${offer_dph}/hr"
 echo "image: ${image}"
 
 # Under ssh_* runtypes Vast replaces PID 1 with sshd — image CMD never runs.
-# onstart bootstraps Orbis from GitHub (slim base) then smoke-tests.
+# onstart bootstraps Orbis from a GitHub tarball (git clone often stalls on
+# marketplace hosts), reuses the image CUDA torch, then smoke-tests.
 onstart="$(cat <<'ONSTART'
 set -eu
 mkdir -p /var/log /workspace
@@ -95,18 +96,28 @@ exec >/var/log/orbis-smoke.log 2>&1
 echo "[orbis] onstart $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 nvidia-smi || true
 
-# uv may be missing on slim pytorch bases
 if ! command -v uv >/dev/null 2>&1; then
-  curl -LsSf https://astral.sh/uv/0.8.4/install.sh | sh
+  curl -fsSL --retry 5 --retry-delay 2 https://astral.sh/uv/0.8.4/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
 fi
+export PATH="$HOME/.local/bin:${PATH:-}"
 
-rm -rf /tmp/orbis-src
-git clone --depth 1 https://github.com/zaitrarrio/orbis.git /tmp/orbis-src
+echo "[orbis] fetch source tarball (no git clone)"
+rm -rf /tmp/orbis-src /tmp/orbis.tgz
+curl -fL --retry 8 --retry-delay 3 --retry-all-errors \
+  --connect-timeout 30 --max-time 180 \
+  -o /tmp/orbis.tgz \
+  https://github.com/zaitrarrio/orbis/archive/refs/heads/main.tar.gz
+mkdir -p /tmp/orbis-src
+tar -xzf /tmp/orbis.tgz -C /tmp/orbis-src --strip-components=1
 cd /tmp/orbis-src
-uv sync --frozen --group dev || uv sync --group dev
-export PATH="$(pwd)/.venv/bin:${PATH}"
-export VIRTUAL_ENV="$(pwd)/.venv"
+
+echo "[orbis] venv with system-site-packages (reuse image torch)"
+python -m venv --system-site-packages .venv
+# shellcheck disable=SC1091
+. .venv/bin/activate
+# Install project + test deps only — do NOT re-download CUDA torch via uv lock
+uv pip install -e . 'numpy>=1.23,<2' pytest
 
 python - <<'PY'
 import torch
@@ -115,14 +126,14 @@ if torch.cuda.is_available():
     print(torch.cuda.get_device_name(0))
 PY
 echo "[orbis] pytest"
-uv run pytest -q
+python -m pytest -q
 echo "[orbis] smoke train"
-uv run python scripts/train_all.py /workspace/orbis-smoke.pt 0.1
+python scripts/train_all.py /workspace/orbis-smoke.pt 0.1
 echo "[orbis] generate"
-uv run orbis generate --ckpt /workspace/orbis-smoke.pt \
+orbis generate --ckpt /workspace/orbis-smoke.pt \
   --prompt "a red circle moving right" --chunks 4 --out /workspace/out.gif
 echo "[orbis] live switch"
-uv run orbis live --ckpt /workspace/orbis-smoke.pt \
+orbis live --ckpt /workspace/orbis-smoke.pt \
   --prompt "a red circle moving right" \
   --switch "2:a blue square moving up" --chunks 4 --out /workspace/live.gif
 ls -la /workspace/out.gif /workspace/live.gif /workspace/orbis-smoke.pt

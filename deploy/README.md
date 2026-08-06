@@ -53,8 +53,9 @@ bash scripts/deploy/vast-test.sh      # SSH-poll until /workspace/.orbis_smoke_o
 bash scripts/deploy/vast-destroy.sh --all-labelled   # stop billing
 ```
 
-Defaults use `pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime` (fast pull) and clone
-`main` in onstart — avoids stalling on the large GHCR `orbis:cuda128` devel image.
+Defaults use `pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime` (fast pull). Onstart
+fetches a GitHub **tarball** of `main` (avoids stalled `git clone`), reuses the
+image CUDA torch via `--system-site-packages`, then smoke-tests.
 Force GHCR with `ORBIS_VAST_USE_GHCR=1`.
 
 Overrides: `VAST_GPU_NAME='RTX 5090'`, `VAST_MAX_DPH=2.0`, `VAST_MIN_INET=500`,
