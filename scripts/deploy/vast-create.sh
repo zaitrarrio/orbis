@@ -78,13 +78,17 @@ mkdir -p /var/log /workspace
 exec >/var/log/orbis-smoke.log 2>&1
 echo "[orbis] onstart $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 nvidia-smi || true
-cd /workspace
-if [ ! -f scripts/train_all.py ]; then
-  echo "[orbis] workspace missing project — cloning"
-  rm -rf /tmp/orbis-src
-  git clone --depth 1 https://github.com/zaitrarrio/orbis.git /tmp/orbis-src
-  cd /tmp/orbis-src
+# Always exercise latest main from GitHub so smoke does not wait on GHCR rebuild.
+rm -rf /tmp/orbis-src
+git clone --depth 1 https://github.com/zaitrarrio/orbis.git /tmp/orbis-src
+cd /tmp/orbis-src
+if [ -f /workspace/.venv/bin/python ]; then
+  export PATH="/workspace/.venv/bin:${PATH}"
+  export VIRTUAL_ENV=/workspace/.venv
+else
   uv sync --frozen --group dev || uv sync --group dev
+  export PATH="$(pwd)/.venv/bin:${PATH}"
+  export VIRTUAL_ENV="$(pwd)/.venv"
 fi
 python - <<'PY'
 import torch
