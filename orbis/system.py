@@ -51,17 +51,12 @@ class OrbisSystem:
             "distilled": self.distilled,
             "backbone_type": self.cfg.backbone.type,
         }
-        # Wan path: prefer LoRA/adapter bag; toy: full generator state
         gen = self.generator
+        # Always persist the full generator — Wan previously saved only LoRA /
+        # memory bags and dropped text_embed, cond_mlp, DiT blocks, etc.
+        payload["generator"] = gen.state_dict()
         if hasattr(gen, "lora_state_dict") and self.cfg.backbone.type == "wan":
             payload["lora"] = gen.lora_state_dict()
-            payload["generator"] = {
-                k: v for k, v in gen.state_dict().items()
-                if "lora_" in k or k.startswith("memory.")
-                or k.startswith("ref_proj.") or k == "identity_token"
-            }
-        else:
-            payload["generator"] = gen.state_dict()
         torch.save(payload, path)
 
     @staticmethod
@@ -71,10 +66,12 @@ class OrbisSystem:
         cfg = OrbisConfig.from_dict(ckpt["config"])
         sys = OrbisSystem.build(cfg)
         sys.vae.load_state_dict(ckpt["vae"])
-        if "lora" in ckpt and hasattr(sys.generator, "load_lora_state_dict"):
-            sys.generator.load_lora_state_dict(ckpt["lora"])
-        else:
+        # Full generator first (includes LoRA tensors when present).
+        if "generator" in ckpt:
             sys.generator.load_state_dict(ckpt["generator"], strict=False)
+        elif "lora" in ckpt and hasattr(sys.generator, "load_lora_state_dict"):
+            # Legacy Wan checkpoints that only stored the LoRA bag.
+            sys.generator.load_lora_state_dict(ckpt["lora"])
         sys.sr.load_state_dict(ckpt["sr"])
         sys.distilled = ckpt.get("distilled", False)
         return sys.to(device).eval()

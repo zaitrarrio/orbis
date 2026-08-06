@@ -165,8 +165,27 @@ def test_event_schedule_and_mid_batch():
 def test_system_wan_checkpoint_roundtrip(tmp_path):
     cfg = wan_smoke_config(seed=9)
     sys = OrbisSystem.build(cfg)
+    # Mutate a trainable tensor so roundtrip is meaningful.
+    with torch.no_grad():
+        sys.generator.text_embed.weight[1].add_(0.123)
+        if hasattr(sys.generator, "blocks") and len(sys.generator.blocks):
+            sys.generator.blocks[0].ada[-1].bias.add_(0.05)
     p = tmp_path / "wan.pt"
     sys.save(str(p))
     loaded = OrbisSystem.load(str(p), map_location="cpu")
     assert loaded.cfg.backbone.type == "wan"
     assert isinstance(loaded.generator, WanAdapter)
+    assert torch.allclose(
+        sys.generator.text_embed.weight, loaded.generator.text_embed.weight)
+    assert torch.allclose(
+        sys.generator.blocks[0].ada[-1].bias,
+        loaded.generator.blocks[0].ada[-1].bias)
+
+
+def test_wan_stub_blocks_are_trainable():
+    """Stub must train DiT blocks — zero-init gates otherwise stay dead."""
+    cfg = wan_smoke_config(seed=0)
+    sys = OrbisSystem.build(cfg)
+    trainable = {n for n, p in sys.generator.named_parameters() if p.requires_grad}
+    assert any(n.startswith("blocks.0.ada") for n in trainable)
+    assert any("cross" in n for n in trainable)

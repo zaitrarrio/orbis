@@ -131,12 +131,14 @@ def wan_real_scale_config(
     world = WorldConfig(height=480, width=832, channels=3, fps=24, hr_scale=4)
     # Wan-VAE-like spatial compression (approx x8); we use x8 for real-scale
     vae = VAEConfig(latent_channels=16, downsample=8, base_channels=64)
+    # patch_size=4 keeps token counts tractable on 24GB (480×832 /8 → 60×104).
     model = ModelConfig(
-        dim=512, depth=12, heads=8, mlp_ratio=4.0, patch_size=2,
+        dim=512, depth=12, heads=8, mlp_ratio=4.0, patch_size=4,
         chunk_frames=8, history_frames=8, memory_tokens=32, text_len=64,
     )
     flow = FlowConfig(teacher_steps=16, student_steps=4)
-    sr = SRConfig(scale=4, base_channels=48)
+    # ×2 SR on 480p is enough for demos; ×4 HR tensors OOM on a single 4090.
+    sr = SRConfig(scale=2, base_channels=48)
     backbone = BackboneConfig(
         type="wan",
         checkpoint_path=checkpoint_path or "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
@@ -146,7 +148,7 @@ def wan_real_scale_config(
         use_bf16=True,
         wan_stub=stub,
     )
-    serve = ServeConfig(fifo_capacity=4, drift_enabled=True)
+    serve = ServeConfig(fifo_capacity=4, drift_enabled=False)
     return OrbisConfig(
         world=world, vae=vae, model=model, flow=flow, sr=sr,
         backbone=backbone, serve=serve, seed=0,

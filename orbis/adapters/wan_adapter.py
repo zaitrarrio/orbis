@@ -73,17 +73,26 @@ class WanAdapter(nn.Module):
         self._hf_loaded = False
 
     def _apply_lora(self, rank: int, alpha: float) -> None:
-        """Wrap patch_embed and final linear with LoRA; freeze base DiT blocks."""
+        """Wrap patch_embed / final with LoRA.
+
+        Do **not** freeze DiT blocks for the structural stub (``wan_stub=True``).
+        Blocks use zero-init AdaLN gates; freezing them permanently zeros
+        self-/cross-attention, so text never reaches spatial tokens and
+        generation collapses to a near-black mean. Freeze only after real HF
+        weights are loaded (see ``freeze_transformer_blocks``).
+        """
         if rank <= 0:
             return
         self.patch_embed = LoRALinear(self.patch_embed, rank=rank, alpha=alpha)
-        # Freeze transformer blocks; train LoRA on patch + final + memory + ref
-        for blk in self.blocks:
-            for p in blk.parameters():
-                p.requires_grad_(False)
         if isinstance(self.final.linear, nn.Linear):
             self.final.linear = LoRALinear(
                 self.final.linear, rank=rank, alpha=alpha)
+
+    def freeze_transformer_blocks(self) -> None:
+        """Freeze DiT blocks for LoRA finetune on a pretrained backbone."""
+        for blk in self.blocks:
+            for p in blk.parameters():
+                p.requires_grad_(False)
 
     def trainable_parameters(self):
         for name, p in self.named_parameters():

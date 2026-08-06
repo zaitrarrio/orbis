@@ -84,46 +84,62 @@ def _quantize(img: np.ndarray) -> np.ndarray:
 
 
 def _lzw_encode(indices: np.ndarray, min_code_size: int) -> bytes:
+    """GIF LZW. Code-size bumps one entry *late* vs a naive compressor:
+
+    After Clear, the decoder does not grow its table on the first code, but the
+    encoder does on its first emit. Bumping when ``next_code == 1 << code_size``
+    therefore raises width one code too early and produces streams that look
+    like a single decoded scanline in common viewers. Match decoder timing with
+    ``next_code > (1 << code_size)`` (still capped at 12-bit codes).
+    """
     clear_code = 1 << min_code_size
     eoi_code = clear_code + 1
     code_size = min_code_size + 1
-    table = {(i,): i for i in range(clear_code)}
+    table = {bytes([i]): i for i in range(clear_code)}
     next_code = eoi_code + 1
 
     out_bits = 0
     out_nbits = 0
     out = bytearray()
 
-    def emit(code: int, nbits: int):
+    def emit(code: int) -> None:
         nonlocal out_bits, out_nbits
         out_bits |= code << out_nbits
-        out_nbits += nbits
+        out_nbits += code_size
         while out_nbits >= 8:
             out.append(out_bits & 0xFF)
             out_bits >>= 8
             out_nbits -= 8
 
-    emit(clear_code, code_size)
-    data = indices.tobytes()
-    cur = (data[0],)
-    for b in data[1:]:
-        nxt = cur + (b,)
-        if nxt in table:
-            cur = nxt
-        else:
-            emit(table[cur], code_size)
-            table[nxt] = next_code
-            next_code += 1
-            if next_code == (1 << code_size) and code_size < 12:
-                code_size += 1
-            if next_code >= 4096:
-                emit(clear_code, code_size)
-                table = {(i,): i for i in range(clear_code)}
+    data = indices.astype(np.uint8, copy=False).ravel().tobytes()
+    if not data:
+        emit(clear_code)
+        emit(eoi_code)
+    else:
+        emit(clear_code)
+        w = data[0:1]
+        for i in range(1, len(data)):
+            k = data[i:i + 1]
+            wk = w + k
+            if wk in table:
+                w = wk
+                continue
+            emit(table[w])
+            if next_code < 4096:
+                table[wk] = next_code
+                next_code += 1
+                # Late bump: see docstring (Clear / first-code asymmetry).
+                if next_code > (1 << code_size) and code_size < 12:
+                    code_size += 1
+            else:
+                # Table full — clear before the next add (no deferred-clear).
+                emit(clear_code)
+                table = {bytes([i]): i for i in range(clear_code)}
                 next_code = eoi_code + 1
                 code_size = min_code_size + 1
-            cur = (b,)
-    emit(table[cur], code_size)
-    emit(eoi_code, code_size)
+            w = k
+        emit(table[w])
+        emit(eoi_code)
     if out_nbits > 0:
         out.append(out_bits & 0xFF)
 

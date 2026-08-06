@@ -39,27 +39,52 @@ def train_vae(system: OrbisSystem, steps: int = 800, batch: int = 64,
     opt = torch.optim.AdamW(vae.parameters(), lr=lr)
     vae.train()
     H, W = cfg.world.height, cfg.world.width
+    # Large canvases are ~95% background — balance fg/bg means or the VAE
+    # collapses to black (toy 32² does not need this as strongly).
+    balanced = (H * W) >= (128 * 128)
     t0 = time.time()
     _log(f"[vae] device {device_name(device)}", log_cb)
     for step in range(steps):
         frames, _ = sampler.frame_batch(batch, 2)
         x = frames_to_tensor(frames).reshape(batch * 2, 3, H, W).to(device)
         rec, _ = vae(x)
-        # Foreground-weighted reconstruction: the small bright shapes must not be
-        # drowned out by the dominant dark background (which causes mean-collapse
-        # under plain MSE).
         bg = x.amin(dim=(2, 3), keepdim=True)
-        w = 1.0 + fg_weight * (x - bg).amax(dim=1, keepdim=True)
-        loss = (w * (rec - x) ** 2).mean()
+        fg = (x - bg).amax(dim=1, keepdim=True)
+        err = (rec - x) ** 2
+        if balanced:
+            fg_m = fg > 0.08
+            bg_m = ~fg_m
+            # Equal-weight foreground / background means, then boost fg.
+            loss_fg = err.mean(dim=1, keepdim=True)[fg_m].mean() if fg_m.any() else err.mean()
+            loss_bg = err.mean(dim=1, keepdim=True)[bg_m].mean() if bg_m.any() else err.mean()
+            loss = loss_bg + max(fg_weight, 24.0) * loss_fg
+        else:
+            w = 1.0 + fg_weight * fg
+            loss = (w * err).mean()
         opt.zero_grad(); loss.backward(); opt.step()
         if step % 200 == 0 or step == steps - 1:
             _log(f"[vae] step {step:4d}/{steps} loss {loss.item():.5f}", log_cb)
-    # calibrate latent scale on a large sample
-    frames, _ = sampler.frame_batch(256, 2)
-    x = frames_to_tensor(frames).reshape(512, 3, H, W).to(device)
-    vae.calibrate(x)
+    # Calibrate latent scale with enough samples even at 480p (encode in
+    # micro-batches so we do not OOM a 24GB card).
+    cal_target = 128
+    micro = max(1, min(batch, 8))
+    acc = []
     vae.eval()
-    _log(f"[vae] done in {time.time()-t0:.1f}s  latent_scale={float(vae.latent_scale):.4f}",
+    with torch.no_grad():
+        n = 0
+        while n < cal_target:
+            take = min(micro, cal_target - n)
+            frames, _ = sampler.frame_batch(take, 1)
+            x = frames_to_tensor(frames).reshape(take, 3, H, W).to(device)
+            # Raw encoder outputs (bypass latent_scale) for std estimate.
+            vae.latent_scale.fill_(1.0)
+            acc.append(vae.encoder(x).reshape(-1))
+            n += take
+        z_cat = torch.cat(acc)
+        vae.latent_scale.fill_(float(z_cat.std()) + 1e-6)
+    vae.eval()
+    _log(f"[vae] done in {time.time()-t0:.1f}s  latent_scale={float(vae.latent_scale):.4f} "
+         f"(cal_n={cal_target})",
          log_cb)
 
 
@@ -112,9 +137,13 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
     sampler = RolloutSampler(cfg, system.vae, seed=cfg.seed + 2)
     device = get_device()
     system.to(device)
-    opt = torch.optim.AdamW(gen.parameters(), lr=lr, weight_decay=1e-4)
+    params = list(
+        gen.trainable_parameters() if hasattr(gen, "trainable_parameters")
+        else gen.parameters())
+    opt = torch.optim.AdamW(params, lr=lr, weight_decay=1e-4)
     gen.train()
-    _log(f"[generator] device {device_name(device)}", log_cb)
+    _log(f"[generator] device {device_name(device)} trainable={sum(p.numel() for p in params)/1e6:.1f}M",
+         log_cb)
 
     def run(phase, steps, mode_fn):
         t0 = time.time()
@@ -126,7 +155,7 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
                                           history_noise=hnoise)
             loss = _flow_step(system, flow, data, device)
             opt.zero_grad(); loss.backward()
-            torch.nn.utils.clip_grad_norm_(gen.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(params, 1.0)
             opt.step()
             ema = loss.item() if ema is None else 0.98 * ema + 0.02 * loss.item()
             if step % 200 == 0 or step == steps - 1:

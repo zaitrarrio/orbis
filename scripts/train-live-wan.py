@@ -52,17 +52,20 @@ def _make_batch_fn(system, data_root: str | None):
     batcher = MidTrainBatcher(cfg, system.vae, ds, seed=cfg.seed + 11)
     sampler = RolloutSampler(cfg, system.vae, seed=cfg.seed + 12)
 
+    # Micro-batch: smoke can afford 4; real-scale latents need 1 on 24GB.
+    bs = 4 if cfg.world.height <= 64 else 1
+
     def batch_fn(mode: str = "history"):
         if mode == "event":
-            return batcher.training_batch(4, mode="event")
+            return batcher.training_batch(bs, mode="event")
         # Prefer toy RolloutSampler when geometry matches toy world speeds
         try:
             return sampler.training_batch(
-                4, mode=mode if mode in ("history", "reference", "text_only")
+                bs, mode=mode if mode in ("history", "reference", "text_only")
                 else "history",
                 memory_context_chunks=1 if mode == "history" else 0)
         except Exception:
-            return batcher.training_batch(4, mode="history")
+            return batcher.training_batch(bs, mode="history")
 
     return batch_fn
 
@@ -105,6 +108,8 @@ def main():
                     help="Directory with manifest.jsonl / video clips")
     ap.add_argument("--load-hf", action="store_true",
                     help="Attempt to load official Wan2.1 Diffusers weights")
+    ap.add_argument("--no-posttrain", action="store_true",
+                    help="Skip guidance/EMA/DMD/GRPO (faster; use until shapes work)")
     args = ap.parse_args()
 
     device = get_device()
@@ -125,27 +130,64 @@ def main():
         print(f"[wan-live] HF weights loaded={ok}")
 
     batch_fn = _make_batch_fn(system, args.data)
+    # Real-scale 480×832: tiny batches on 24GB; roomier on 80GB H100.
+    import torch as _torch
+    vram_gb = (_torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+               if _torch.cuda.is_available() else 0)
+    big = (not args.smoke) and vram_gb >= 60
+    vae_bs = 16 if args.smoke else (8 if big else 4)
+    gen_bs = 16 if args.smoke else (2 if big else 1)
+    sr_bs = 8 if args.smoke else (2 if big else 1)
+    force_chunks = 1 if args.smoke else (2 if big else 1)
+    print(f"[wan-live] vram≈{vram_gb:.0f}GB batches vae={vae_bs} gen={gen_bs} "
+          f"sr={sr_bs} force_chunks={force_chunks}")
 
-    train_vae(system, steps=s(200 if args.smoke else 900))
+    def _gc():
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    train_vae(system, steps=s(200 if args.smoke else 2500), batch=vae_bs,
+              lr=3e-4 if not args.smoke else 1e-3)
+    _gc()
     # Streaming adaptation
     train_generator(
         system,
         pretrain_steps=s(100 if args.smoke else 700),
         stream_steps=s(200 if args.smoke else 1800),
+        batch=gen_bs,
     )
+    _gc()
     mid_train_events(system, steps=s(50 if args.smoke else 400),
                      batch_fn=batch_fn)
-    guidance_distill(system, lambda: batch_fn("history"),
-                     steps=s(40 if args.smoke else 200))
-    ema_consistency_distill(system, lambda: batch_fn("history"),
-                            steps=s(40 if args.smoke else 200))
-    self_forcing_dmd(system, lambda: batch_fn("history"),
-                     steps=s(40 if args.smoke else 200),
-                     force_chunks=1 if args.smoke else 2)
-    grpo_align(system, lambda: batch_fn("history"),
-               steps=s(20 if args.smoke else 100),
-               group_size=2 if args.smoke else 4)
-    train_sr(system, steps=s(50 if args.smoke else 300))
+    _gc()
+    # Persist a recoverable checkpoint before heavy post-train.
+    system.save(args.out)
+    print(f"[wan-live] mid checkpoint {args.out}")
+
+    if not args.no_posttrain:
+        guidance_distill(system, lambda: batch_fn("history"),
+                         steps=s(40 if args.smoke else 200))
+        _gc()
+        ema_consistency_distill(system, lambda: batch_fn("history"),
+                                steps=s(40 if args.smoke else 200))
+        _gc()
+        try:
+            self_forcing_dmd(system, lambda: batch_fn("history"),
+                             steps=s(40 if args.smoke else 200),
+                             force_chunks=force_chunks)
+            _gc()
+            grpo_align(system, lambda: batch_fn("history"),
+                       steps=s(20 if args.smoke else 50),
+                       group_size=2)
+        except torch.cuda.OutOfMemoryError as e:
+            print(f"[wan-live] post-train OOM ({e}); keeping prior weights")
+            _gc()
+    else:
+        print("[wan-live] skipping post-train (--no-posttrain)")
+
+    train_sr(system, steps=s(50 if args.smoke else 300), batch=sr_bs)
 
     system.save(args.out)
     print(f"[wan-live] saved {args.out} in {time.time()-t0:.1f}s")

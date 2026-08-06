@@ -17,6 +17,8 @@ def build_backbone(cfg: OrbisConfig) -> nn.Module:
         adapter = WanAdapter(
             cfg.model, cfg.vae, cfg.backbone, cfg.latent_hw)
         if not cfg.backbone.wan_stub:
-            adapter.try_load_hf(cfg.backbone.checkpoint_path)
+            ok = adapter.try_load_hf(cfg.backbone.checkpoint_path)
+            if ok:
+                adapter.freeze_transformer_blocks()
         return adapter
     raise ValueError(f"Unknown backbone.type={cfg.backbone.type!r}")

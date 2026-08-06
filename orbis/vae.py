@@ -21,21 +21,43 @@ class ConvVAE(nn.Module):
         super().__init__()
         c, ch = world.channels, vae.base_channels
         lc = vae.latent_channels
+        ds = int(vae.downsample)
+        if ds not in (4, 8):
+            raise ValueError(f"VAE downsample must be 4 or 8, got {ds}")
         self.latent_channels = lc
-        self.encoder = nn.Sequential(
-            nn.Conv2d(c, ch, 3, 1, 1), nn.SiLU(),
-            nn.Conv2d(ch, ch, 4, 2, 1), nn.SiLU(),      # /2
-            nn.Conv2d(ch, ch * 2, 4, 2, 1), nn.SiLU(),  # /4
-            nn.Conv2d(ch * 2, lc, 3, 1, 1),
-        )
-        self.decoder = nn.Sequential(
-            nn.Conv2d(lc, ch * 2, 3, 1, 1), nn.SiLU(),
+        self.downsample = ds
+        # Spatial stack: always /4, optional extra /2 for Wan-like /8.
+        enc: list[nn.Module] = [
+            nn.Conv2d(c, ch, 3, 1, 1), nn.GroupNorm(8, ch), nn.SiLU(),
+            nn.Conv2d(ch, ch, 4, 2, 1), nn.GroupNorm(8, ch), nn.SiLU(),      # /2
+            nn.Conv2d(ch, ch * 2, 4, 2, 1), nn.GroupNorm(8, ch * 2), nn.SiLU(),  # /4
+        ]
+        mid_ch = ch * 2
+        if ds == 8:
+            enc += [
+                nn.Conv2d(mid_ch, mid_ch, 4, 2, 1),
+                nn.GroupNorm(8, mid_ch), nn.SiLU(),
+            ]  # /8
+        enc += [nn.Conv2d(mid_ch, lc, 3, 1, 1), nn.Tanh()]  # bound latents
+        self.encoder = nn.Sequential(*enc)
+
+        dec: list[nn.Module] = [
+            nn.Conv2d(lc, mid_ch, 3, 1, 1), nn.GroupNorm(8, mid_ch), nn.SiLU(),
+        ]
+        if ds == 8:
+            dec += [
+                nn.Upsample(scale_factor=2, mode="nearest"),
+                nn.Conv2d(mid_ch, mid_ch, 3, 1, 1),
+                nn.GroupNorm(8, mid_ch), nn.SiLU(),
+            ]
+        dec += [
             nn.Upsample(scale_factor=2, mode="nearest"),
-            nn.Conv2d(ch * 2, ch, 3, 1, 1), nn.SiLU(),
+            nn.Conv2d(mid_ch, ch, 3, 1, 1), nn.GroupNorm(8, ch), nn.SiLU(),
             nn.Upsample(scale_factor=2, mode="nearest"),
-            nn.Conv2d(ch, ch, 3, 1, 1), nn.SiLU(),
+            nn.Conv2d(ch, ch, 3, 1, 1), nn.GroupNorm(8, ch), nn.SiLU(),
             nn.Conv2d(ch, c, 3, 1, 1),
-        )
+        ]
+        self.decoder = nn.Sequential(*dec)
         # Latent normalisation scale, populated by ``calibrate`` after training.
         self.register_buffer("latent_scale", torch.ones(1))
 

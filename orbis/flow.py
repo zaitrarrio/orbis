@@ -37,7 +37,11 @@ class RectifiedFlow:
 
     def loss(self, model_velocity: torch.Tensor, z: torch.Tensor,
              noise: torch.Tensor) -> torch.Tensor:
-        return (model_velocity - self.target(z, noise)).pow(2).mean()
+        err = (model_velocity - self.target(z, noise)).pow(2)
+        # Upweight latents that carry signal so dark background does not dominate
+        # at large resolutions (same motivation as VAE fg_weight).
+        w = 1.0 + 6.0 * z.detach().abs().mean(dim=2, keepdim=True)
+        return (w * err).mean()
 
     @torch.no_grad()
     def sample(self, velocity_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],

@@ -60,3 +60,29 @@ def test_png_and_gif_headers():
     gif = media.encode_gif(frames, fps=8, scale=2)
     assert gif[:6] == b"GIF89a"
     assert gif[-1:] == b"\x3b"                 # trailer
+
+
+def test_gif_lzw_roundtrip_full_frame():
+    """Regression: early code-size bump made viewers show a single scanline."""
+    try:
+        from PIL import Image
+    except ImportError:
+        import pytest
+        pytest.skip("Pillow not installed")
+
+    frames = []
+    for i in range(6):
+        f = np.zeros((32, 32, 3), np.float32)
+        f[8:24, (i * 3) % 20:(i * 3) % 20 + 10] = (1.0, 0.2, 0.1)
+        frames.append(f)
+    # scale=12 → 384², large enough to exercise 10–12-bit LZW + clears
+    gif = media.encode_gif(frames, fps=8, scale=12)
+    from io import BytesIO
+    im = Image.open(BytesIO(gif))
+    assert im.size == (384, 384)
+    for i in range(im.n_frames):
+        im.seek(i)
+        arr = np.asarray(im.convert("RGB"))
+        ys, xs = np.where(arr.sum(-1) > 40)
+        assert len(ys) > 1000, f"frame {i} too sparse (broken LZW?)"
+        assert len(set(ys.tolist())) > 50, f"frame {i} looks like a single line"
