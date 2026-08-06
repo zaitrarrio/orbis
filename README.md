@@ -54,28 +54,28 @@ The interactive console (`orbis demo`, a single self-contained HTML file):
 ## Quickstart
 
 ```bash
-pip install -e .            # numpy + torch (CPU is fine)
+uv sync                     # numpy + torch (CPU is fine)
 
-python scripts/train_all.py orbis.pt        # ~15 min on 4 CPU cores
+uv run python scripts/train_all.py orbis.pt        # ~15 min on 4 CPU cores
 # ...or a fast smoke checkpoint:
-python scripts/train_all.py orbis.pt 0.1    # ~2 min, lower quality
+uv run python scripts/train_all.py orbis.pt 0.1    # ~2 min, lower quality
 
 # text-to-video -> animated GIF
-orbis generate --prompt "a red circle moving right" --chunks 6 --out out.gif
+uv run orbis generate --prompt "a red circle moving right" --chunks 6 --out out.gif
 
 # live prompt switch mid-rollout (admitted at the boundary, past is immutable)
-orbis live --prompt "a red circle moving right" \
+uv run orbis live --prompt "a red circle moving right" \
            --switch "3:a blue square moving up" --chunks 8 --out live.gif
 
 # image-to-video, plus 4x streaming super-resolution
-orbis generate --prompt "a cyan square moving right" --mode i2v --out i2v.gif
-orbis generate --prompt "a red circle moving right" --superres --out hi.gif
+uv run orbis generate --prompt "a cyan square moving right" --mode i2v --out i2v.gif
+uv run orbis generate --prompt "a red circle moving right" --superres --out hi.gif
 
 # evaluate prompt alignment and stability on the toy benchmark
-orbis eval
+uv run orbis eval
 
 # build the self-contained interactive HTML console
-orbis demo --out demo.html
+uv run orbis demo --out demo.html
 ```
 
 ## The live contract, precisely

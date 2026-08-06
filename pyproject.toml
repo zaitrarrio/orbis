@@ -1,25 +1,31 @@
 [build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "visko-orbis"
 version = "1.0.0"
 description = "A faithful, CPU-runnable reference implementation of the Visko Orbis Live Model for real-time interactive long video generation."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.9,<3.13"
 license = { text = "MIT" }
 authors = [{ name = "Orbis reference implementation" }]
-dependencies = ["numpy>=1.23", "torch>=2.0"]
-
-[project.optional-dependencies]
-dev = ["pytest>=7.0"]
+dependencies = ["numpy>=1.23,<2", "torch>=2.0"]
 
 [project.scripts]
 orbis = "orbis.cli:main"
 
-[tool.setuptools.packages.find]
-include = ["orbis*"]
+[dependency-groups]
+dev = ["pytest>=7.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["orbis"]
+
+[tool.uv]
+# Keep resolution on wheels that exist for Intel macOS (PyTorch dropped x86_64 Mac after 2.2).
+required-environments = [
+  "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
