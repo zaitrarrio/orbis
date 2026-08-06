@@ -42,6 +42,20 @@ Mirror fields from `deploy/runpod/template.json`.
 3. **Entrypoint** launch keeps the image `CMD`; **SSH/Jupyter** → paste `deploy/vast/onstart.sh` into On-start.
 4. Docker options: see `deploy/vast/template.env`. Private GHCR: configure registry login on the account/template.
 
+### Scripted deploy (Strobe-style)
+
+```bash
+# .env needs VAST_API_KEY (never commit .env)
+cp .env.example .env   # then fill VAST_API_KEY
+
+bash scripts/deploy/vast-create.sh    # rent RTX 4090 by default, run smoke onstart
+bash scripts/deploy/vast-test.sh      # SSH-poll until /workspace/.orbis_smoke_ok
+bash scripts/deploy/vast-destroy.sh --all-labelled   # stop billing
+```
+
+Overrides: `VAST_GPU_NAME='RTX 5090'`, `VAST_MAX_DPH=2.0`, `VAST_LABEL=orbis-gpu`.
+SSH key default: `~/.ssh/id_strobe_vast` (`VAST_SSH_KEY` to override).
+
 ## Make the GHCR package public (optional)
 
 Repo **Settings → Packages** (or the package page after the first workflow run) →

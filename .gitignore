@@ -12,3 +12,10 @@ live.gif
 i2v.gif
 hi.gif
 .DS_Store
+.env
+.env.*
+!.env.example
+orbis-wan.pt
+orbis-smoke.pt
+*.pt
+!orbis.pt
