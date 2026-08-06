@@ -50,7 +50,8 @@ class RolloutSampler:
     def encode(self, frames: np.ndarray) -> torch.Tensor:
         """``(B,F,H,W,3)`` -> latents ``(B,F,lc,lh,lw)``."""
         b, f = frames.shape[:2]
-        t = frames_to_tensor(frames).reshape(b * f, 3, self.H, self.W)
+        device = next(self.vae.parameters()).device
+        t = frames_to_tensor(frames).reshape(b * f, 3, self.H, self.W).to(device)
         z = self.vae.encode(t)
         return z.reshape(b, f, *z.shape[1:])
 
