@@ -1,0 +1,17 @@
+.git
+.venv
+.pytest_cache
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+.cursor
+assets/train.log
+assets/_*.png
+out.gif
+live.gif
+i2v.gif
+hi.gif
+demo.html
+*.gif
+orbis.pt
+.DS_Store

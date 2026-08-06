@@ -17,6 +17,7 @@ from typing import Dict, Iterator, List, Optional
 import numpy as np
 import torch
 
+from .device import get_device
 from .flow import RectifiedFlow
 from .session import LiveSession
 from .system import OrbisSystem
@@ -37,16 +38,17 @@ class Chunk:
 
 class LiveEngine:
     def __init__(self, system: OrbisSystem, steps: Optional[int] = None,
-                 seed: int = 0):
-        self.system = system.eval()
+                 seed: int = 0, device=None):
+        self.device = get_device(device)
+        self.system = system.to(self.device).eval()
         self.cfg = system.cfg
         self.flow = RectifiedFlow(self.cfg.flow.train_sigma_eps)
         # real-time path uses the few-step student count
         self.steps = steps or self.cfg.flow.student_steps
-        self.device = torch.device("cpu")
         self.gen = system.generator
         self.vae = system.vae
-        self._rng = torch.Generator(device=self.device).manual_seed(seed)
+        self._rng = torch.Generator(device=self.device)
+        self._rng.manual_seed(seed)
 
     # -- latent <-> pixels ----------------------------------------------------
     @torch.no_grad()
@@ -58,7 +60,7 @@ class LiveEngine:
 
     @torch.no_grad()
     def encode(self, frames: np.ndarray) -> torch.Tensor:
-        t = frames_to_tensor(frames)                 # (T,3,H,W)
+        t = frames_to_tensor(frames).to(self.device)  # (T,3,H,W)
         z = self.vae.encode(t)
         return z.unsqueeze(0)                        # (1,T,lc,lh,lw)
 
@@ -121,14 +123,16 @@ class LiveEngine:
         lh, lw = cfg.latent_hw
         # reference only seeds the very first chunk (empty history)
         reference = s.reference if s.history is None else None
-        ctx = self.gen.encode_context(s.active_ids, s.history, reference,
+        text_ids = s.active_ids.to(self.device)
+        ctx = self.gen.encode_context(text_ids, s.history, reference,
                                       s.memory_state)
 
         def velocity_fn(z, sigma):
             return self.gen.forward(z, sigma, ctx)
 
         t0 = time.time()
-        noise = torch.randn(1, cf, lc, lh, lw, generator=self._rng)
+        noise = torch.randn(1, cf, lc, lh, lw, device=self.device,
+                            generator=self._rng)
         z = self.flow.sample(velocity_fn, (1, cf, lc, lh, lw), self.device,
                              steps=self.steps, noise=noise)
         frames = self.decode(z)
@@ -153,7 +157,7 @@ class LiveEngine:
 
     @torch.no_grad()
     def upscale(self, frames: np.ndarray) -> np.ndarray:
-        lr = frames_to_tensor(frames).unsqueeze(0)   # (1,T,3,H,W)
+        lr = frames_to_tensor(frames).unsqueeze(0).to(self.device)  # (1,T,3,H,W)
         hr = self.system.sr(lr)
         return tensor_to_frames(hr[0])
 

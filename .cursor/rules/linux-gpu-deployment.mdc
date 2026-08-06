@@ -1,0 +1,27 @@
+---
+description: Linux+GPU runtime; Docker for dev; RunPod/Vast deployment targets
+alwaysApply: true
+---
+
+# Linux + GPU deployment
+
+This project **develops and deploys only on Linux with NVIDIA GPUs**. Do not add macOS/Windows-native dependency pins, CPU-only torch indexes, or host-local non-Docker workflows as the default path.
+
+## Environments
+
+| Role | How |
+|------|-----|
+| Local / CI-like dev | Docker Compose with NVIDIA Container Toolkit (`docker compose up`) |
+| Cloud | **RunPod** and **Vast.ai** using the repo Docker image |
+| Primary GPUs | **RTX 4090** (Ada), **RTX 5090** (Blackwell), **H100** (Hopper) |
+
+Stack baseline: **CUDA 12.8+**, **PyTorch ≥ 2.7** with `cu128` wheels (Blackwell `sm_120` + Hopper/Ada). Prefer `pytorch/pytorch:*-cuda12.8-cudnn9-*` or `nvidia/cuda:12.8*` bases.
+
+## Agent rules
+
+- Resolve and install packages for **`linux-x86_64` + CUDA**, never Darwin/Windows wheels as the resolution target.
+- Keep `pyproject.toml` / `uv.lock` on the PyTorch **cu128** index; do not reintroduce `required-environments` for macOS.
+- Assume `torch.cuda.is_available()` in runtime/training paths; use `orbis.device.get_device()` — do not hardcode `cpu` except in unit tests.
+- New deps must be Linux/CUDA-compatible (no Apple MPS-only or Windows-only packages).
+- Ship changes via the **Dockerfile** / `docker-compose.yml`; RunPod/Vast templates under `deploy/` must stay valid.
+- Prefer GPU-friendly defaults (batched tensors on CUDA, `map_location` from `get_device()`).

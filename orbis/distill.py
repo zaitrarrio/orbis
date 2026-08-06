@@ -17,6 +17,7 @@ from typing import Optional
 import torch
 
 from .dataset import RolloutSampler
+from .device import device_name, get_device
 from .flow import RectifiedFlow
 from .system import OrbisSystem
 from .train import _build_memory, _log
@@ -41,11 +42,14 @@ def distill(system: OrbisSystem, steps: int = 500, batch: int = 32,
         p.requires_grad_(False)
     flow = RectifiedFlow(cfg.flow.train_sigma_eps)
     sampler = RolloutSampler(cfg, system.vae, seed=cfg.seed + 4)
-    device = torch.device("cpu")
+    device = get_device()
+    system.to(device)
+    teacher.to(device)
     opt = torch.optim.AdamW(student.parameters(), lr=lr)
     student.train()
     t0 = time.time()
     ts, ss = cfg.flow.teacher_steps, cfg.flow.student_steps
+    _log(f"[distill] device {device_name(device)}", log_cb)
 
     for step in range(steps):
         r = sampler.rng.random()

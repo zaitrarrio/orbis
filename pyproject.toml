@@ -5,12 +5,16 @@ build-backend = "hatchling.build"
 [project]
 name = "visko-orbis"
 version = "1.0.0"
-description = "A faithful, CPU-runnable reference implementation of the Visko Orbis Live Model for real-time interactive long video generation."
+description = "Live Model reference implementation for real-time interactive long video generation, targeting Linux NVIDIA GPU (CUDA 12.8) on Docker, RunPod, and Vast."
 readme = "README.md"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.11,<3.13"
 license = { text = "MIT" }
 authors = [{ name = "Orbis reference implementation" }]
-dependencies = ["numpy>=1.23,<2", "torch>=2.0"]
+dependencies = [
+  "numpy>=1.23,<2",
+  # CUDA 12.8 wheels: Ada (4090), Blackwell (5090), Hopper (H100)
+  "torch>=2.7.0",
+]
 
 [project.scripts]
 orbis = "orbis.cli:main"
@@ -22,10 +26,18 @@ dev = ["pytest>=7.0"]
 packages = ["orbis"]
 
 [tool.uv]
-# Keep resolution on wheels that exist for Intel macOS (PyTorch dropped x86_64 Mac after 2.2).
-required-environments = [
-  "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+# Linux x86_64 only — Docker / RunPod / Vast GPU hosts
+environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

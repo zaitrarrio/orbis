@@ -1,16 +1,20 @@
 # Visko Orbis — reference implementation
 
-A faithful, **CPU-runnable** reference implementation of the *Live Model* from
+A faithful reference implementation of the *Live Model* from
 [**Visko Orbis 1.0: A Live Model for Real-Time Interactive Long Video
 Generation**](https://arxiv.org/pdf/2607.26694).
+
+**Development and deployment target Linux + NVIDIA GPU** (Docker locally; **RunPod**
+and **Vast.ai** in the cloud). Primary GPUs: **RTX 4090**, **RTX 5090**, **H100**
+(CUDA 12.8 / PyTorch cu128). See [`deploy/README.md`](deploy/README.md).
 
 The production system generates native 832×480 video, streams it to 4K at 24 FPS
 across a multi-GPU serving engine, and is trained on a large curated video
 corpus. That cannot be reproduced without the weights, the data, and a GPU
 cluster. **What can be reproduced — and is, here — is the paper's actual
 contribution: the *mechanisms* of a Live Model.** Every core idea is implemented
-as a real, trainable, testable component at a toy scale that runs end-to-end on a
-laptop CPU in a few minutes.
+as a real, trainable, testable component at a toy scale that runs end-to-end in
+minutes on a single GPU (or CPU fallback for unit tests).
 
 📄 **A full write-up of the derivation, the math, and the paper→code mapping is in
 [`doc/METHODOLOGY.md`](doc/METHODOLOGY.md)** (the source paper is archived under
@@ -51,32 +55,36 @@ The interactive console (`orbis demo`, a single self-contained HTML file):
 
 ---
 
-## Quickstart
+## Quickstart (Docker + GPU)
+
+Requires [Docker](https://docs.docker.com/) with the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
 ```bash
-uv sync                     # numpy + torch (CPU is fine)
+docker compose build
+docker compose run --rm orbis bash
 
-uv run python scripts/train_all.py orbis.pt        # ~15 min on 4 CPU cores
-# ...or a fast smoke checkpoint:
-uv run python scripts/train_all.py orbis.pt 0.1    # ~2 min, lower quality
+# inside the container (CUDA torch from the cu128 lockfile):
+uv run python scripts/train_all.py orbis.pt        # full train on GPU
+uv run python scripts/train_all.py orbis.pt 0.1    # smoke checkpoint
 
-# text-to-video -> animated GIF
 uv run orbis generate --prompt "a red circle moving right" --chunks 6 --out out.gif
-
-# live prompt switch mid-rollout (admitted at the boundary, past is immutable)
 uv run orbis live --prompt "a red circle moving right" \
            --switch "3:a blue square moving up" --chunks 8 --out live.gif
-
-# image-to-video, plus 4x streaming super-resolution
 uv run orbis generate --prompt "a cyan square moving right" --mode i2v --out i2v.gif
 uv run orbis generate --prompt "a red circle moving right" --superres --out hi.gif
-
-# evaluate prompt alignment and stability on the toy benchmark
 uv run orbis eval
-
-# build the self-contained interactive HTML console
 uv run orbis demo --out demo.html
 ```
+
+One-shot without a shell:
+
+```bash
+docker compose run --rm orbis uv run pytest
+docker compose run --rm orbis uv run python scripts/train_all.py orbis.pt 0.1
+```
+
+Cloud: push the image and use the RunPod / Vast templates under [`deploy/`](deploy/).
 
 ## The live contract, precisely
 
@@ -128,7 +136,8 @@ cost does not grow with rollout length.
 ## Tests
 
 ```bash
-pytest            # ~20 fast tests; the trained-model test runs if orbis.pt exists
+docker compose run --rm orbis uv run pytest
+# ~20 fast tests; the trained-model test runs if orbis.pt exists
 ```
 
 Covered: world determinism and prompt switching; multilingual parsing and the
@@ -148,10 +157,10 @@ read, run, test, and modify.
 ## Layout
 
 ```
-orbis/
-  config.py       world.py      vocab.py      text.py        media.py
-  vae.py          flow.py       modules.py    memory.py      model.py
-  dataset.py      train.py      distill.py    superres.py
-  session.py      engine.py     eval.py       demo.py        cli.py
-scripts/train_all.py     tests/     assets/
+orbis/                 Python package (CUDA-first via device.py)
+scripts/train_all.py
+tests/   assets/   doc/
+Dockerfile   docker-compose.yml
+deploy/                RunPod + Vast templates
+.cursor/rules/         Linux+GPU project rule
 ```

@@ -71,6 +71,6 @@ def test_checkpoint_roundtrip(tmp_path):
     sysm = OrbisSystem.build(OrbisConfig())
     p = tmp_path / "ck.pt"
     sysm.save(str(p))
-    loaded = OrbisSystem.load(str(p))
+    loaded = OrbisSystem.load(str(p), map_location="cpu")
     for a, b in zip(sysm.generator.parameters(), loaded.generator.parameters()):
         assert torch.allclose(a, b)

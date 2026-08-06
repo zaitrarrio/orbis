@@ -2,7 +2,7 @@
 
 The staging mirrors Figure 3 of the paper -- a bidirectional short-clip prior is
 adapted into a chunk-wise streaming model with history + memory and history
-augmentation.  Everything is sized to converge on a CPU in a few minutes.
+augmentation.  Sized for fast iteration on a single NVIDIA GPU (Docker / RunPod / Vast).
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import torch.nn.functional as F
 
 from .config import OrbisConfig
 from .dataset import RolloutSampler
+from .device import device_name, get_device
 from .flow import RectifiedFlow
 from .system import OrbisSystem
 from .vae import frames_to_tensor
@@ -31,15 +32,18 @@ def _log(msg: str, cb: Optional[Callable[[str], None]]):
 def train_vae(system: OrbisSystem, steps: int = 800, batch: int = 64,
               lr: float = 1e-3, fg_weight: float = 8.0, log_cb=None) -> None:
     cfg = system.cfg
+    device = get_device()
+    system.to(device)
     vae = system.vae
     sampler = RolloutSampler(cfg, vae, seed=cfg.seed + 1)
     opt = torch.optim.AdamW(vae.parameters(), lr=lr)
     vae.train()
     H, W = cfg.world.height, cfg.world.width
     t0 = time.time()
+    _log(f"[vae] device {device_name(device)}", log_cb)
     for step in range(steps):
         frames, _ = sampler.frame_batch(batch, 2)
-        x = frames_to_tensor(frames).reshape(batch * 2, 3, H, W)
+        x = frames_to_tensor(frames).reshape(batch * 2, 3, H, W).to(device)
         rec, _ = vae(x)
         # Foreground-weighted reconstruction: the small bright shapes must not be
         # drowned out by the dominant dark background (which causes mean-collapse
@@ -52,7 +56,7 @@ def train_vae(system: OrbisSystem, steps: int = 800, batch: int = 64,
             _log(f"[vae] step {step:4d}/{steps} loss {loss.item():.5f}", log_cb)
     # calibrate latent scale on a large sample
     frames, _ = sampler.frame_batch(256, 2)
-    x = frames_to_tensor(frames).reshape(512, 3, H, W)
+    x = frames_to_tensor(frames).reshape(512, 3, H, W).to(device)
     vae.calibrate(x)
     vae.eval()
     _log(f"[vae] done in {time.time()-t0:.1f}s  latent_scale={float(vae.latent_scale):.4f}",
@@ -106,9 +110,11 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
     gen = system.generator
     flow = RectifiedFlow(cfg.flow.train_sigma_eps)
     sampler = RolloutSampler(cfg, system.vae, seed=cfg.seed + 2)
-    device = torch.device("cpu")
+    device = get_device()
+    system.to(device)
     opt = torch.optim.AdamW(gen.parameters(), lr=lr, weight_decay=1e-4)
     gen.train()
+    _log(f"[generator] device {device_name(device)}", log_cb)
 
     def run(phase, steps, mode_fn):
         t0 = time.time()
@@ -153,6 +159,8 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
 def train_sr(system: OrbisSystem, steps: int = 300, batch: int = 24,
              lr: float = 2e-3, log_cb=None) -> None:
     cfg = system.cfg
+    device = get_device()
+    system.to(device)
     sr = system.sr
     scale = cfg.sr.scale
     H, W = cfg.world.height, cfg.world.width
@@ -163,13 +171,14 @@ def train_sr(system: OrbisSystem, steps: int = 300, batch: int = 24,
     sr.train()
     t0 = time.time()
     cf = cfg.model.chunk_frames
+    _log(f"[sr] device {device_name(device)}", log_cb)
     for step in range(steps):
         hr_frames = np.empty((batch, cf, Hs, Ws, 3), dtype=np.float32)
         for b in range(batch):
             spec = sample_scene(rng)
             hi, _ = rollout(spec, cf, Hs, Ws)
             hr_frames[b] = hi
-        hi = frames_to_tensor(hr_frames)                       # (B,cf,3,Hs,Ws)
+        hi = frames_to_tensor(hr_frames).to(device)            # (B,cf,3,Hs,Ws)
         # Low-res supervision is the anti-aliased downsample of the HR target,
         # so LR/HR are aligned exactly (a true low-pass pair).
         lo = F.avg_pool2d(hi.reshape(batch * cf, 3, Hs, Ws), scale)

@@ -1,0 +1,19 @@
+# Local Linux+GPU development (requires NVIDIA Container Toolkit).
+# Usage: docker compose run --rm orbis bash
+#        docker compose run --rm orbis uv run pytest
+services:
+  orbis:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: orbis:cuda128
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    gpus: all
+    stdin_open: true
+    tty: true
+    command: ["bash"]

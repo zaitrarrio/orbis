@@ -42,11 +42,11 @@ def test_switch_only_affects_uncommitted_chunks():
     # The core, training-independent contract: a switch queued at a boundary is
     # admitted there, already-delivered frames are byte-identical, and the
     # version log flips exactly at the boundary.
-    eng = LiveEngine(_small_system(), steps=2, seed=7)
+    eng = LiveEngine(_small_system(), steps=2, seed=7, device="cpu")
     cf = eng.cfg.model.chunk_frames
     boundary = 3
     a = eng.generate_video("a red circle moving right", n_chunks=6, seed=7)
-    eng2 = LiveEngine(eng.system, steps=2, seed=7)
+    eng2 = LiveEngine(eng.system, steps=2, seed=7, device="cpu")
     b = eng2.generate_video("a red circle moving right", n_chunks=6, seed=7,
                             schedule={boundary: "a blue square moving up"})
     fa, fb = a["frames"], b["frames"]
@@ -67,14 +67,14 @@ def test_trained_text_conditioning_changes_output():
     import pytest
     if not os.path.exists("orbis.pt"):
         pytest.skip("no trained checkpoint (run `orbis train`)")
-    eng = LiveEngine(OrbisSystem.load("orbis.pt"), seed=1)
+    eng = LiveEngine(OrbisSystem.load("orbis.pt", map_location="cpu"), seed=1, device="cpu")
     red = eng.generate_video("a red circle moving right", n_chunks=2, seed=1)
     blue = eng.generate_video("a blue square moving down", n_chunks=2, seed=1)
     assert not np.allclose(red["frames"], blue["frames"], atol=1e-3)
 
 
 def test_streaming_state_is_bounded():
-    eng = LiveEngine(_small_system(), steps=2, seed=0)
+    eng = LiveEngine(_small_system(), steps=2, seed=0, device="cpu")
     s = eng.start("a green square moving down")
     hf = eng.cfg.model.history_frames
     n_mem = eng.cfg.model.memory_tokens
@@ -85,7 +85,7 @@ def test_streaming_state_is_bounded():
 
 
 def test_modes_run_and_shapes():
-    eng = LiveEngine(_small_system(), steps=2, seed=0)
+    eng = LiveEngine(_small_system(), steps=2, seed=0, device="cpu")
     H, W = eng.cfg.world.height, eng.cfg.world.width
     # T2V
     c = eng.generate_chunk(eng.start("a red circle moving right"))
@@ -101,7 +101,7 @@ def test_modes_run_and_shapes():
 
 
 def test_superres_upscales():
-    eng = LiveEngine(_small_system(), steps=2, seed=0)
+    eng = LiveEngine(_small_system(), steps=2, seed=0, device="cpu")
     c = eng.generate_chunk(eng.start("a red circle moving right"))
     hr = eng.upscale(c.frames)
     scale = eng.cfg.sr.scale
