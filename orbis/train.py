@@ -104,11 +104,13 @@ def _build_memory(gen, batch, evicted, device):
 
 
 def _flow_step(system, flow, batch_data, device, pixel_aux: float = 0.35,
-               endpoint_aux: float = 0.0, sigma_power: float = 1.0):
+               endpoint_aux: float = 0.0, sigma_power: float = 1.0,
+               geometry_w: float = 0.0):
     """One RF step with FG-localized velocity loss (+ optional pixel/endpoint)."""
     import torch.nn.functional as F
     from .distill import _few_step
     from .flow import pixel_fg_weight_from_latents
+    from .geometry_loss import geometry_aux
 
     gen = system.generator
     target = batch_data["target"].to(device)
@@ -165,6 +167,8 @@ def _flow_step(system, flow, batch_data, device, pixel_aux: float = 0.35,
             loss_bg_lat = loss_bg_lat[bg_lat].mean() if bg_lat.any() else 0.0
             loss = loss + pixel_aux * (1.5 * loss_bg + 32.0 * loss_fg
                                       + 16.0 * dice + 6.0 * loss_bg_lat)
+            if geometry_w > 0:
+                loss = loss + geometry_w * geometry_aux(pred_pix, gt_pix)
         else:
             loss = loss + pixel_aux * err.mean()
 
@@ -180,6 +184,13 @@ def _flow_step(system, flow, batch_data, device, pixel_aux: float = 0.35,
         bg = (w <= 5.0)
         if bg.any():
             loss_end = loss_end + 3.0 * (z_end.pow(2) * bg).sum() / bg.float().sum().clamp_min(1.0)
+        if geometry_w > 0:
+            bf = b * target.shape[1]
+            c, lh, lw = target.shape[2], target.shape[3], target.shape[4]
+            with torch.no_grad():
+                gt_pix_e = system.vae.decode(target.reshape(bf, c, lh, lw))
+            pred_pix_e = system.vae.decode(z_end.reshape(bf, c, lh, lw))
+            loss_end = loss_end + geometry_aux(pred_pix_e, gt_pix_e)
         loss = loss + endpoint_aux * loss_end
     return loss
 
@@ -189,7 +200,7 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
                     lr: float = 6e-4, history_noise: float = 0.15,
                     pixel_aux: float = 0.35, endpoint_aux: float = 0.0,
                     sigma_power: float = 1.0, t2v_first: bool = False,
-                    log_cb=None) -> None:
+                    geometry_w: float = 0.0, log_cb=None) -> None:
     cfg = system.cfg
     system.vae.eval()
     for p in system.vae.parameters():
@@ -216,7 +227,8 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
                                           memory_context_chunks=mctx,
                                           history_noise=hnoise)
             loss = _flow_step(system, flow, data, device, pixel_aux=pixel_aux,
-                              endpoint_aux=endpoint_aux, sigma_power=sigma_power)
+                              endpoint_aux=endpoint_aux, sigma_power=sigma_power,
+                              geometry_w=geometry_w)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 1.0)
             opt.step()

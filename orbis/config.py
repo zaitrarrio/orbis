@@ -174,4 +174,52 @@ def wan_smoke_config(seed: int = 0) -> OrbisConfig:
     )
 
 
+def wan_structure_micro_config(seed: int = 0) -> OrbisConfig:
+    """64×64 Wan stub for S0 structure proof (see structure-training-methodology)."""
+    world = WorldConfig(height=64, width=64, channels=3, fps=12, hr_scale=2)
+    vae = VAEConfig(latent_channels=16, downsample=4, base_channels=32)
+    model = ModelConfig(
+        dim=128, depth=6, heads=4, mlp_ratio=4.0, patch_size=2,
+        chunk_frames=4, history_frames=4, memory_tokens=16, text_len=16,
+    )
+    flow = FlowConfig(teacher_steps=8, student_steps=4)
+    sr = SRConfig(scale=2, base_channels=24)
+    backbone = BackboneConfig(
+        type="wan", wan_stub=True, anchor_reference=True,
+        use_bf16=True, lora_rank=8, lora_alpha=16.0,
+    )
+    return OrbisConfig(
+        world=world, vae=vae, model=model, flow=flow, sr=sr,
+        backbone=backbone,
+        serve=ServeConfig(fifo_capacity=4, drift_enabled=False),
+        seed=seed,
+    )
+
+
+def wan_structure_curriculum_config(seed: int = 0) -> OrbisConfig:
+    """Small-canvas Wan stub for learning one compact moving shape first.
+
+    128×128 with VAE÷4 and patch_size=2 keeps the object spanning many tokens
+    so spatial structure can converge before scaling to 480p.
+    """
+    world = WorldConfig(height=128, width=128, channels=3, fps=12, hr_scale=2)
+    vae = VAEConfig(latent_channels=16, downsample=4, base_channels=48)
+    model = ModelConfig(
+        dim=256, depth=8, heads=8, mlp_ratio=4.0, patch_size=2,
+        chunk_frames=4, history_frames=4, memory_tokens=16, text_len=32,
+    )
+    flow = FlowConfig(teacher_steps=12, student_steps=4)
+    sr = SRConfig(scale=2, base_channels=32)
+    backbone = BackboneConfig(
+        type="wan", wan_stub=True, anchor_reference=True,
+        use_bf16=True, lora_rank=8, lora_alpha=16.0,
+    )
+    return OrbisConfig(
+        world=world, vae=vae, model=model, flow=flow, sr=sr,
+        backbone=backbone,
+        serve=ServeConfig(fifo_capacity=4, drift_enabled=False),
+        seed=seed,
+    )
+
+
 DEFAULT_CONFIG = OrbisConfig()
