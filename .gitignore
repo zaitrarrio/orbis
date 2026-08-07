@@ -7,6 +7,8 @@ build/
 dist/
 assets/train.log
 assets/_*.png
+assets/**/*.png
+assets/**/*.gif
 out.gif
 live.gif
 i2v.gif

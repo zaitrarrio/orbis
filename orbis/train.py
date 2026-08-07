@@ -103,7 +103,13 @@ def _build_memory(gen, batch, evicted, device):
     return state
 
 
-def _flow_step(system, flow, batch_data, device):
+def _flow_step(system, flow, batch_data, device, pixel_aux: float = 0.35,
+               endpoint_aux: float = 0.0, sigma_power: float = 1.0):
+    """One RF step with FG-localized velocity loss (+ optional pixel/endpoint)."""
+    import torch.nn.functional as F
+    from .distill import _few_step
+    from .flow import pixel_fg_weight_from_latents
+
     gen = system.generator
     target = batch_data["target"].to(device)
     text_ids = batch_data["text_ids"].to(device)
@@ -117,16 +123,72 @@ def _flow_step(system, flow, batch_data, device):
 
     memory_state = _build_memory(gen, b, evicted, device)
     noise = torch.randn_like(target)
-    sigma = flow.sample_sigma(b, device)
+    sigma = flow.sample_sigma(b, device, power=sigma_power)
     zt = flow.interpolate(target, noise, sigma)
     ctx = gen.encode_context(text_ids, history, reference, memory_state)
     v = gen.forward(zt, sigma, ctx)
-    return flow.loss(v, target, noise)
+
+    # Prefer decoded FG mask; fall back to latent energy if decode fails.
+    try:
+        w = pixel_fg_weight_from_latents(system.vae, target)
+    except Exception:
+        w = flow.latent_fg_weight(target)
+    loss = flow.loss(v, target, noise, spatial_weight=w)
+
+    if pixel_aux > 0:
+        # Clean-latent estimate: zt - sigma * v  (equals z when v = eps - z).
+        s = sigma.view(-1, *([1] * (zt.dim() - 1)))
+        z_hat = zt - s * v
+        bf, c, lh, lw = (b * target.shape[1], target.shape[2],
+                         target.shape[3], target.shape[4])
+        with torch.no_grad():
+            gt_pix = system.vae.decode(target.reshape(bf, c, lh, lw))
+            bg = gt_pix.amin(dim=(2, 3), keepdim=True)
+            fg = ((gt_pix - bg).amax(dim=1, keepdim=True) > 0.08)
+        pred_pix = system.vae.decode(z_hat.reshape(bf, c, lh, lw))
+        err = (pred_pix - gt_pix).pow(2).mean(dim=1, keepdim=True)
+        if fg.any() and (~fg).any():
+            loss_fg = err[fg].mean()
+            loss_bg = err[~fg].mean()
+            pred_energy = (pred_pix - pred_pix.amin(dim=(2, 3), keepdim=True)
+                           ).amax(dim=1, keepdim=True)
+            pred_fg = pred_energy / (pred_energy.amax(dim=(2, 3), keepdim=True)
+                                     + 1e-6)
+            fg_f = fg.float()
+            dice = 1.0 - (2.0 * (pred_fg * fg_f).sum()
+                          / (pred_fg.sum() + fg_f.sum() + 1e-6))
+            # Direct latent BG hinge (bypass VAE nonlinearity).
+            fg_lat = F.adaptive_max_pool2d(fg_f, (lh, lw))
+            fg_lat = fg_lat.reshape(b, target.shape[1], 1, lh, lw)
+            bg_lat = fg_lat < 0.5
+            loss_bg_lat = z_hat.pow(2).mean(dim=2, keepdim=True)
+            loss_bg_lat = loss_bg_lat[bg_lat].mean() if bg_lat.any() else 0.0
+            loss = loss + pixel_aux * (1.5 * loss_bg + 32.0 * loss_fg
+                                      + 16.0 * dice + 6.0 * loss_bg_lat)
+        else:
+            loss = loss + pixel_aux * err.mean()
+
+    # Match the few-step Euler endpoint used at inference (train≠sample gap).
+    if endpoint_aux > 0:
+        ss = system.cfg.flow.student_steps
+        z_end = _few_step(lambda zz, ss_: gen.forward(zz, ss_, ctx), noise, ss)
+        err_end = (z_end - target).pow(2)
+        ww = w
+        while ww.dim() < err_end.dim():
+            ww = ww.unsqueeze(2)
+        loss_end = (ww * err_end).sum() / ww.sum().clamp_min(1e-6)
+        bg = (w <= 5.0)
+        if bg.any():
+            loss_end = loss_end + 3.0 * (z_end.pow(2) * bg).sum() / bg.float().sum().clamp_min(1.0)
+        loss = loss + endpoint_aux * loss_end
+    return loss
 
 
 def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
                     stream_steps: int = 1400, batch: int = 48,
                     lr: float = 6e-4, history_noise: float = 0.15,
+                    pixel_aux: float = 0.35, endpoint_aux: float = 0.0,
+                    sigma_power: float = 1.0, t2v_first: bool = False,
                     log_cb=None) -> None:
     cfg = system.cfg
     system.vae.eval()
@@ -153,7 +215,8 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
             data = sampler.training_batch(batch, mode=mode,
                                           memory_context_chunks=mctx,
                                           history_noise=hnoise)
-            loss = _flow_step(system, flow, data, device)
+            loss = _flow_step(system, flow, data, device, pixel_aux=pixel_aux,
+                              endpoint_aux=endpoint_aux, sigma_power=sigma_power)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 1.0)
             opt.step()
@@ -170,6 +233,14 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
 
     # Stage 2: streaming adaptation (history + memory + augmentation).
     def stream_mode(rng):
+        if t2v_first:
+            # Match T2V eval: mostly text-only / reference, little history.
+            r = rng.random()
+            if r < 0.7:
+                return "text_only", 0, 0.0
+            if r < 0.9:
+                return "reference", 0, 0.0
+            return "history", 1, 0.0
         r = rng.random()
         if r < 0.6:
             mctx = int(rng.integers(0, 3))       # 0..2 evicted chunks

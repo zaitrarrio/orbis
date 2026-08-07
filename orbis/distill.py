@@ -73,7 +73,19 @@ def distill(system: OrbisSystem, steps: int = 500, batch: int = 32,
         mem_s = _build_memory(student, b, evicted, device)
         ctx_s = student.encode_context(text_ids, history, reference, mem_s)
         z_student = _few_step(lambda z, s: student.forward(z, s, ctx_s), noise, ss)
-        loss = (z_student - z_teacher).pow(2).mean()
+        # Prefer GT endpoint (spatial structure) over speckled teacher; mix both.
+        from .flow import pixel_fg_weight_from_latents
+        try:
+            w = pixel_fg_weight_from_latents(system.vae, target)
+        except Exception:
+            w = flow.latent_fg_weight(target)
+        err_t = (z_student - z_teacher).pow(2)
+        err_g = (z_student - target).pow(2)
+        while w.dim() < err_g.dim():
+            w = w.unsqueeze(2)
+        loss_t = (w * err_t).sum() / w.sum().clamp_min(1e-6)
+        loss_g = (w * err_g).sum() / w.sum().clamp_min(1e-6)
+        loss = 0.35 * loss_t + 0.65 * loss_g
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
         opt.step()

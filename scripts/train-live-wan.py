@@ -110,6 +110,10 @@ def main():
                     help="Attempt to load official Wan2.1 Diffusers weights")
     ap.add_argument("--no-posttrain", action="store_true",
                     help="Skip guidance/EMA/DMD/GRPO (faster; use until shapes work)")
+    ap.add_argument("--resume", default=None,
+                    help="Resume/finetune from checkpoint (skips VAE train)")
+    ap.add_argument("--finetune-steps", type=int, default=0,
+                    help="If --resume, run this many stream steps (0=scale defaults)")
     args = ap.parse_args()
 
     device = get_device()
@@ -124,10 +128,14 @@ def main():
 
     s = lambda n: max(4, int(n * args.scale))
     t0 = time.time()
-    system = OrbisSystem.build(cfg).to(device)
-    if args.load_hf and hasattr(system.generator, "try_load_hf"):
-        ok = system.generator.try_load_hf(cfg.backbone.checkpoint_path)
-        print(f"[wan-live] HF weights loaded={ok}")
+    if args.resume:
+        system = OrbisSystem.load(args.resume).to(device)
+        print(f"[wan-live] resumed {args.resume}")
+    else:
+        system = OrbisSystem.build(cfg).to(device)
+        if args.load_hf and hasattr(system.generator, "try_load_hf"):
+            ok = system.generator.try_load_hf(cfg.backbone.checkpoint_path)
+            print(f"[wan-live] HF weights loaded={ok}")
 
     batch_fn = _make_batch_fn(system, args.data)
     # Real-scale 480×832: tiny batches on 24GB; roomier on 80GB H100.
@@ -148,25 +156,49 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    train_vae(system, steps=s(200 if args.smoke else 2500), batch=vae_bs,
-              lr=3e-4 if not args.smoke else 1e-3)
-    _gc()
-    # Streaming adaptation
+    if not args.resume:
+        train_vae(system, steps=s(200 if args.smoke else 2500), batch=vae_bs,
+                  lr=3e-4 if not args.smoke else 1e-3)
+        _gc()
+
+    # Streaming adaptation (or spatial finetune when resuming)
+    if args.resume and args.finetune_steps > 0:
+        pre_steps, stream_steps = 0, args.finetune_steps
+        gen_lr = 2e-4
+    else:
+        pre_steps = s(100 if args.smoke else 700)
+        stream_steps = s(200 if args.smoke else 1800)
+        gen_lr = 6e-4 if args.smoke else 3e-4
+
     train_generator(
         system,
-        pretrain_steps=s(100 if args.smoke else 700),
-        stream_steps=s(200 if args.smoke else 1800),
+        pretrain_steps=pre_steps,
+        stream_steps=stream_steps,
         batch=gen_bs,
+        lr=gen_lr,
+        pixel_aux=0.5 if not args.smoke else 0.2,
+        endpoint_aux=(0.5 if args.resume else 0.35) if not args.smoke else 0.0,
+        sigma_power=2.0 if (args.resume or not args.smoke) else 1.0,
+        t2v_first=bool(args.resume) or not args.smoke,
     )
     _gc()
-    mid_train_events(system, steps=s(50 if args.smoke else 400),
+    mid_train_events(system, steps=s(50 if args.smoke else (200 if args.resume else 400)),
                      batch_fn=batch_fn)
     _gc()
     # Persist a recoverable checkpoint before heavy post-train.
     system.save(args.out)
     print(f"[wan-live] mid checkpoint {args.out}")
 
-    if not args.no_posttrain:
+    # On resume spatial finetunes: always run few-step distill vs GT/teacher.
+    if args.resume and not args.no_posttrain:
+        from orbis.distill import distill
+        try:
+            distill(system, steps=s(80 if args.smoke else 400),
+                    batch=max(1, gen_bs), lr=1e-4)
+        except torch.cuda.OutOfMemoryError as e:
+            print(f"[wan-live] distill OOM ({e}); keeping prior weights")
+            _gc()
+    elif not args.no_posttrain and not args.resume:
         guidance_distill(system, lambda: batch_fn("history"),
                          steps=s(40 if args.smoke else 200))
         _gc()
@@ -185,9 +217,10 @@ def main():
             print(f"[wan-live] post-train OOM ({e}); keeping prior weights")
             _gc()
     else:
-        print("[wan-live] skipping post-train (--no-posttrain)")
+        print("[wan-live] skipping post-train")
 
-    train_sr(system, steps=s(50 if args.smoke else 300), batch=sr_bs)
+    if not args.resume:
+        train_sr(system, steps=s(50 if args.smoke else 300), batch=sr_bs)
 
     system.save(args.out)
     print(f"[wan-live] saved {args.out} in {time.time()-t0:.1f}s")
