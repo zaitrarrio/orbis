@@ -77,6 +77,17 @@ class BackboneConfig:
     use_bf16: bool = True
     # Structural Wan-scale DiT when official weights are not loaded
     wan_stub: bool = True
+    # Load and drive the REAL pretrained WanTransformer3DModel (frozen + LoRA)
+    # instead of the custom Wan-*scale* stub in ``adapters/wan_adapter.py``.
+    # Requires the ``wan`` extra (diffusers/transformers) and, for anything
+    # beyond CPU shape tests, a real GPU (see deploy/README.md).
+    real_weights: bool = False
+    # HF repo/path for the UMT5 tokenizer + text encoder; defaults to the
+    # ``text_encoder``/``tokenizer`` subfolders of ``checkpoint_path``.
+    text_encoder_path: Optional[str] = None
+    # Wan2.1's FlowMatchEulerDiscreteScheduler training horizon; used to
+    # rescale orbis's sigma in [0, 1] into Wan's own timestep space.
+    wan_num_train_timesteps: int = 1000
 
 
 @dataclass
@@ -147,6 +158,54 @@ def wan_real_scale_config(
         anchor_reference=True,
         use_bf16=True,
         wan_stub=stub,
+    )
+    serve = ServeConfig(fifo_capacity=4, drift_enabled=False)
+    return OrbisConfig(
+        world=world, vae=vae, model=model, flow=flow, sr=sr,
+        backbone=backbone, serve=serve, seed=0,
+    )
+
+
+def wan21_real_config(
+    checkpoint_path: Optional[str] = None,
+    text_encoder_path: Optional[str] = None,
+) -> OrbisConfig:
+    """OrbisConfig driving the REAL pretrained Wan2.1-1.3B transformer.
+
+    Unlike :func:`wan_real_scale_config` (which trains a same-scale but
+    randomly initialized custom DiT *stub*), this targets ``RealWanBackbone``
+    (``orbis/adapters/wan21_real.py``): the real ``WanTransformer3DModel`` is
+    loaded frozen from Hugging Face and only LoRA adapters + orbis's own
+    memory/history projections are trained.
+
+    ``model.dim`` here is the *orbis-side* width used only for the memory
+    bank and its projection into Wan's own text/cross-attention space -- it
+    is independent of Wan's internal hidden size (1536 for the 1.3B variant),
+    which lives inside the frozen transformer and is never reimplemented.
+    ``model.depth``/``heads``/``mlp_ratio``/``patch_size`` are unused by
+    ``RealWanBackbone`` (no custom DiT blocks are built) but kept populated
+    for schema/CLI compatibility with the other Wan configs.
+    """
+    # Wan2.1-1.3B native training resolution; latent grid (480/8, 832/8) =
+    # (60, 104), matching the real AutoencoderKLWan's x8 spatial compression.
+    world = WorldConfig(height=480, width=832, channels=3, fps=16, hr_scale=2)
+    vae = VAEConfig(latent_channels=16, downsample=8, base_channels=64)
+    model = ModelConfig(
+        dim=512, depth=1, heads=8, mlp_ratio=4.0, patch_size=1,
+        chunk_frames=4, history_frames=8, memory_tokens=32, text_len=32,
+    )
+    flow = FlowConfig(teacher_steps=32, student_steps=4)
+    sr = SRConfig(scale=2, base_channels=48)
+    backbone = BackboneConfig(
+        type="wan",
+        checkpoint_path=checkpoint_path or "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+        text_encoder_path=text_encoder_path,
+        lora_rank=16,
+        lora_alpha=32.0,
+        anchor_reference=True,
+        use_bf16=True,
+        wan_stub=False,
+        real_weights=True,
     )
     serve = ServeConfig(fifo_capacity=4, drift_enabled=False)
     return OrbisConfig(

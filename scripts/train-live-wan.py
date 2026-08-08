@@ -30,6 +30,7 @@ import torch
 sys.path.insert(0, ".")
 
 from orbis.config import (
+    wan21_real_config,
     wan_real_scale_config,
     wan_smoke_config,
     wan_structure_curriculum_config,
@@ -121,6 +122,20 @@ def main():
                     help="Directory with manifest.jsonl / video clips")
     ap.add_argument("--load-hf", action="store_true",
                     help="Attempt to load official Wan2.1 Diffusers weights")
+    ap.add_argument("--real-wan", action="store_true",
+                    help="Drive the REAL pretrained Wan2.1-1.3B transformer "
+                    "frozen + LoRA (orbis.adapters.wan21_real.RealWanBackbone) "
+                    "instead of the structural Wan-scale stub. Requires "
+                    "`uv sync --extra wan` and, beyond CPU shape tests, a real "
+                    "GPU -- see deploy/README.md. Independent of --load-hf, "
+                    "which only affects the old stub's (no-op) weight-mapping "
+                    "attempt.")
+    ap.add_argument("--wan-checkpoint", default=None,
+                    help="HF repo/path for --real-wan "
+                    "(default: Wan-AI/Wan2.1-T2V-1.3B-Diffusers)")
+    ap.add_argument("--wan-text-encoder", default=None,
+                    help="HF repo/path for the UMT5 tokenizer/text encoder "
+                    "used by --real-wan (default: same repo as --wan-checkpoint)")
     ap.add_argument("--no-posttrain", action="store_true",
                     help="Skip guidance/EMA/DMD/GRPO (faster; use until shapes work)")
     ap.add_argument("--resume", default=None,
@@ -140,6 +155,9 @@ def main():
         cfg = wan_structure_micro_config()
     elif args.curriculum:
         cfg = wan_structure_curriculum_config()
+    elif args.real_wan:
+        cfg = wan21_real_config(checkpoint_path=args.wan_checkpoint,
+                                 text_encoder_path=args.wan_text_encoder)
     else:
         cfg = wan_real_scale_config(stub=not args.load_hf)
     if args.load_hf:

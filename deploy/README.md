@@ -107,3 +107,46 @@ uv run python scripts/train_all.py orbis-wan-smoke.pt 0.1 --backbone wan
 
 Clips for mid-training: put `manifest.jsonl` + videos under e.g.
 `/workspace/data/openvid` and pass `--data /workspace/data/openvid`.
+
+### Real Wan2.1-1.3B backbone (frozen transformer + LoRA)
+
+`--load-hf` above only affects the legacy structural Wan-*scale* stub
+(`orbis/adapters/wan_adapter.py`); by its own docstring it never actually
+remaps any pretrained tensors into the stub. `--real-wan` instead drives the
+real `diffusers.WanTransformer3DModel` directly, frozen, with LoRA adapters
+on its attention/FFN projections plus orbis's memory-bank and text
+projection heads as the only trainable parameters
+(`orbis/adapters/wan21_real.py`). This is the higher-fidelity path.
+
+```bash
+uv sync --extra wan   # diffusers, transformers, accelerate, sentencepiece (UMT5 tokenizer)
+export HF_HOME=/workspace/hf-cache
+export HUGGINGFACE_HUB_CACHE=/workspace/hf-cache
+
+# Real Wan2.1-T2V-1.3B transformer + UMT5 text encoder, frozen + LoRA:
+uv run python scripts/train-live-wan.py orbis-real-wan.pt 0.1 --real-wan
+
+# Override the HF checkpoint / text-encoder repo if needed:
+uv run python scripts/train-live-wan.py orbis-real-wan.pt 0.1 --real-wan \
+  --wan-checkpoint Wan-AI/Wan2.1-T2V-1.3B-Diffusers \
+  --wan-text-encoder Wan-AI/Wan2.1-T2V-1.3B-Diffusers
+```
+
+Requires a real GPU (~8GB+ VRAM for the 1.3B transformer plus the UMT5 text
+encoder; prefer 4090/5090/H100) — this sandbox has no GPU and no `diffusers`
+installed, so this path is validated here only via CPU mock-transformer unit
+tests (`tests/test_wan21_real_adapter.py`); please run the commands above on
+your rented pod to confirm an end-to-end forward/backward pass and inspect
+sample rollouts.
+
+**Known, explicitly scoped fidelity gap:** this phase keeps orbis's own
+already-trained `ConvVAE` (`orbis/vae.py`) for encode/decode, not Wan's
+native `AutoencoderKLWan`. Channel counts are matched (`wan21_real_config()`
+sets 16 latent channels to mirror Wan's transformer `in_channels=16`), so
+shapes are compatible, but the *latent distribution* orbis's VAE produces
+wasn't what Wan was pretrained against — LoRA fine-tuning is expected to
+adapt the frozen transformer to this shift. Swapping in the real
+`AutoencoderKLWan` for the full pipeline is a larger, riskier change and is
+intentionally deferred to a follow-up PR (see PR description) to keep this
+change reviewable. Flow-GRPO/DanceGRPO-based RL post-training
+(Phase 1b) is also a separate, later PR.

@@ -19,9 +19,12 @@ import re
 from typing import Dict, List, Optional
 
 import numpy as np
+import torch
 
-from .vocab import (COLORS, DIRECTIONS, SHAPES, SIZES, SPEEDS, SYNONYMS,
-                    TOKEN_TO_ID)
+from .vocab import (CANONICAL_TOKENS, COLORS, DIRECTIONS, SHAPES, SIZES,
+                    SPEEDS, SYNONYMS, TOKEN_TO_ID)
+
+ID_TO_TOKEN: Dict[int, str] = {i: t for i, t in enumerate(CANONICAL_TOKENS)}
 
 _CATEGORIES = {
     "shape": set(SHAPES),
@@ -121,3 +124,52 @@ class PromptTokenizer:
         ids = ids[: self.max_len]
         ids += [0] * (self.max_len - len(ids))
         return np.array(ids, dtype=np.int64)
+
+
+def ids_to_controls(ids) -> Dict[str, str]:
+    """Invert :meth:`PromptTokenizer.encode_controls` back into a controls dict.
+
+    Classifies each non-pad id by which canonical category it belongs to
+    (shape/color/direction/speed/size) — safe because ``CANONICAL_TOKENS`` is a
+    disjoint union of those five closed vocabularies plus filler words.
+    """
+    controls: Dict[str, str] = {}
+    for i in ids:
+        i = int(i)
+        if i <= 0 or i not in ID_TO_TOKEN:
+            continue
+        tok = ID_TO_TOKEN[i]
+        for cat, members in _CATEGORIES.items():
+            if tok in members and cat not in controls:
+                controls[cat] = tok
+    return controls
+
+
+def ids_to_prompt_strings(text_ids) -> List[str]:
+    """Bridge the toy symbolic vocab to a real natural-language text encoder.
+
+    ``orbis``'s own vocab (see ``orbis/vocab.py``) is a small closed set of
+    canonical control tokens (shape/color/direction/speed/size, e.g. ``red``,
+    ``circle``, ``right``), not a natural-language tokenizer. Real Wan2.1 is
+    conditioned by a UMT5 text encoder that expects an actual prompt string.
+    Rather than inventing a second, incompatible text pipeline, this rebuilds
+    a natural-language prompt from the recovered controls via
+    :func:`controls_to_prompt` (e.g. ``[circle_id, red_id, right_id] ->
+    "a red circle moving right"``), so a real pretrained text encoder can be
+    dropped in without changing any upstream call sites (:class:`LiveSession`,
+    :class:`LiveEngine`, the dataset/batcher code) that only ever produce and
+    pass around ``text_ids`` tensors.
+
+    Accepts a ``(B, L)`` int tensor/array of token ids; returns a list of
+    ``B`` prompt strings.
+    """
+    if isinstance(text_ids, torch.Tensor):
+        text_ids = text_ids.detach().cpu().numpy()
+    text_ids = np.asarray(text_ids)
+    if text_ids.ndim == 1:
+        text_ids = text_ids[None, :]
+    out: List[str] = []
+    for row in text_ids:
+        controls = ids_to_controls(row)
+        out.append(controls_to_prompt(controls) if controls else "")
+    return out

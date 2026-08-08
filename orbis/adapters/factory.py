@@ -13,6 +13,16 @@ def build_backbone(cfg: OrbisConfig) -> nn.Module:
     if btype == "toy":
         return Generator(cfg.model, cfg.vae).build(cfg.latent_hw)
     if btype == "wan":
+        if cfg.backbone.real_weights:
+            # Real, frozen WanTransformer3DModel + LoRA + real UMT5 text
+            # encoder -- see orbis/adapters/wan21_real.py for the full
+            # integration design and its explicitly scoped fidelity gap
+            # (orbis's own VAE, not Wan's native AutoencoderKLWan, this
+            # phase). Requires the `wan` extra and, beyond CPU shape tests,
+            # a real GPU (see deploy/README.md).
+            from orbis.adapters.wan21_real import RealWanBackbone
+            return RealWanBackbone.from_pretrained(
+                cfg.model, cfg.vae, cfg.backbone, cfg.latent_hw)
         from orbis.adapters.wan_adapter import WanAdapter
         adapter = WanAdapter(
             cfg.model, cfg.vae, cfg.backbone, cfg.latent_hw)
