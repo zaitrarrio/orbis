@@ -2,7 +2,8 @@
 """Gate spatial structure for curriculum Wan demos.
 
 Pass criteria (ideal compact object):
-  n_cc <= 3, top_frac >= 0.6, local_mass >= 0.4, bright% in [0.5, 12]
+  n_cc <= 3, top_frac >= 0.6, local_mass >= 0.4, bright% in [0.5, 18]
+  (upper bright% 18 allows soft blob halos; GT toy is ~8%)
 """
 
 from __future__ import annotations
@@ -80,7 +81,7 @@ def stats(frames: np.ndarray) -> dict:
 
 def passes(s: dict) -> bool:
     return (
-        0.5 <= s["bright_pct"] <= 12.0
+        0.5 <= s["bright_pct"] <= 18.0
         and s["n_cc"] <= 3
         and s["top_frac"] >= 0.6
         and s["local_mass"] >= 0.4

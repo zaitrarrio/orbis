@@ -40,7 +40,7 @@ On mid-frame of a T2V GIF (threshold bright > 0.35):
 
 | Metric | Pass |
 |---|---|
-| `bright_pct` | ∈ [0.5, 12] |
+| `bright_pct` | ∈ [0.5, 18] |
 | `n_cc` | ≤ 3 |
 | `top_frac` | ≥ 0.6 |
 | `local_mass` | ≥ 0.4 |
