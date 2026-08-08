@@ -75,8 +75,15 @@ class DiTBlock(nn.Module):
         self.mlp = MLP(dim, int(dim * mlp_ratio))
         # 6 modulation params for self-attn + MLP, plus 1 gate for cross-attn.
         self.ada = nn.Sequential(nn.SiLU(), nn.Linear(dim, 7 * dim))
+        # Scratch training: open residual gates so attn/MLP receive gradients.
+        # Classic AdaLN-Zero (gates=0) starves block weights of grad from step 0.
         nn.init.zeros_(self.ada[-1].weight)
         nn.init.zeros_(self.ada[-1].bias)
+        with torch.no_grad():
+            bias = self.ada[-1].bias.view(7, dim)
+            bias[2] = 1.0  # gate_msa
+            bias[5] = 1.0  # gate_mlp
+            bias[6] = 1.0  # gate_ca
 
     def forward(self, x, c, text_kv, self_mask=None):
         (shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp,
@@ -97,7 +104,8 @@ class FinalLayer(nn.Module):
         self.ada = nn.Sequential(nn.SiLU(), nn.Linear(dim, 2 * dim))
         nn.init.zeros_(self.ada[-1].weight)
         nn.init.zeros_(self.ada[-1].bias)
-        nn.init.zeros_(self.linear.weight)
+        # Non-zero readout so velocity head is trainable from step 0.
+        nn.init.xavier_uniform_(self.linear.weight)
         nn.init.zeros_(self.linear.bias)
 
     def forward(self, x, c):

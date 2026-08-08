@@ -23,12 +23,12 @@ prompt-switch signal.
 **Broken piece:** generator spatial mass placement under few-step sampling.
 
 **Root causes (ranked):**
-1. Single-σ velocity training ≠ 4-step Euler inference (partially addressed by
-   endpoint aux; not sufficient alone).
-2. Speckle local minimum: sparse colored noise matches FG area fraction.
-3. No explicit geometry target (mask / centroid) — color losses do not pin
-   location.
-4. Large canvas / coarse patches make the object a few tokens (480p).
+1. **AdaLN-Zero gate init (critical):** residual gates start at 0 → attn/MLP get
+   ~no gradient (observed `1/182` params with grad). Fixed by opening gates to 1
+   at init for scratch training (`orbis/modules.py`).
+2. Single-σ velocity training ≠ few-step Euler inference.
+3. Speckle / wash local minima once color is learned without structure.
+4. Large canvas / coarse patches (480p).
 
 ---
 
@@ -108,9 +108,9 @@ Applied every generator step (S0/S1/S2):
 | Term | Weight (default) | Definition |
 |---|---|---|
 | RF velocity | 1.0 | FG-weighted MSE; `fg_boost=24`, `bg_weight=1.5`; mean = Σ(w·err)/Σ(w) |
-| Endpoint | **0.75** (primary) | 4-step Euler from same noise → GT latents, FG-weighted + 3× BG ‖z‖² |
-| Pixel aux | 0.5 | Decode `z_hat = z_σ − σ·v`; FG/BG MSE + Dice + latent BG hinge |
-| **Mask / centroid** | **1.0 / 0.5** | Soft FG overlap + centroid L2 in pixel space on `z_hat` and on endpoint decode (new; required for S0) |
+| Endpoint | **1.0** (primary) | 4-step Euler → GT; FG-weighted + 8× BG ‖z‖² + off-mask energy |
+| Pixel aux | **0.75** | Decode `z_hat = z_σ − σ·v`; FG/BG MSE + Dice + BG energy kill |
+| **Mask / centroid** | **2.5** (geom aux) | Soft Dice + centroid L2 on `z_hat` and endpoint decode |
 | σ sampling | `power=2.0` | Bias toward low σ |
 | Conditioning | `t2v_first=True` | ≥70% `text_only`, ≤10% history |
 

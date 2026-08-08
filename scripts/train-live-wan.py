@@ -224,25 +224,39 @@ def main():
     if args.smoke:
         endpoint_aux = 0.0
     elif micro:
-        endpoint_aux = 0.75
+        # S0.1: stronger endpoint to clear satellites / over-bright BG.
+        endpoint_aux = 1.0
     elif curriculum:
         endpoint_aux = 0.55
     elif args.resume:
         endpoint_aux = 0.5
     else:
         endpoint_aux = 0.35
-    geometry_w = 1.0 if micro else (0.5 if curriculum else 0.0)
+    geometry_w = 2.5 if micro else (0.5 if curriculum else 0.0)
+    pixel_aux = 0.75 if micro else (0.5 if not args.smoke else 0.2)
+    if args.resume and args.finetune_steps > 0 and micro:
+        gen_lr = 1.5e-4  # stable cleanup finetune from S0 blob prior
+    # S0: pure few-step→GT bootstrap (primary structure teacher).
+    bootstrap_steps = s(4000) if micro else 0
+    if args.resume and micro and args.finetune_steps > 0:
+        bootstrap_steps = args.finetune_steps
+        pre_steps, stream_steps = 0, max(200, args.finetune_steps // 4)
+    elif micro and not args.resume:
+        # Cold start: bootstrap only + tiny RF polish (wash came from RF mix).
+        pre_steps, stream_steps = 0, s(200)
+        gen_lr = 8e-4
     train_generator(
         system,
         pretrain_steps=pre_steps,
         stream_steps=stream_steps,
         batch=gen_bs,
         lr=gen_lr,
-        pixel_aux=0.5 if not args.smoke else 0.2,
+        pixel_aux=pixel_aux,
         endpoint_aux=endpoint_aux,
         sigma_power=2.0 if use_structure_obj else 1.0,
         t2v_first=use_structure_obj,
         geometry_w=geometry_w,
+        bootstrap_steps=bootstrap_steps,
     )
     _gc()
     mid_steps = (100 if args.smoke else

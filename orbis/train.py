@@ -165,8 +165,11 @@ def _flow_step(system, flow, batch_data, device, pixel_aux: float = 0.35,
             bg_lat = fg_lat < 0.5
             loss_bg_lat = z_hat.pow(2).mean(dim=2, keepdim=True)
             loss_bg_lat = loss_bg_lat[bg_lat].mean() if bg_lat.any() else 0.0
-            loss = loss + pixel_aux * (1.5 * loss_bg + 32.0 * loss_fg
-                                      + 16.0 * dice + 6.0 * loss_bg_lat)
+            # Kill satellite mass outside GT (bright% / n_cc failures).
+            bg_energy = (pred_energy * (1.0 - fg_f)).mean()
+            loss = loss + pixel_aux * (4.0 * loss_bg + 32.0 * loss_fg
+                                      + 16.0 * dice + 8.0 * loss_bg_lat
+                                      + 24.0 * bg_energy)
             if geometry_w > 0:
                 loss = loss + geometry_w * geometry_aux(pred_pix, gt_pix)
         else:
@@ -183,15 +186,63 @@ def _flow_step(system, flow, batch_data, device, pixel_aux: float = 0.35,
         loss_end = (ww * err_end).sum() / ww.sum().clamp_min(1e-6)
         bg = (w <= 5.0)
         if bg.any():
-            loss_end = loss_end + 3.0 * (z_end.pow(2) * bg).sum() / bg.float().sum().clamp_min(1.0)
+            loss_end = loss_end + 8.0 * (z_end.pow(2) * bg).sum() / bg.float().sum().clamp_min(1.0)
         if geometry_w > 0:
             bf = b * target.shape[1]
             c, lh, lw = target.shape[2], target.shape[3], target.shape[4]
             with torch.no_grad():
                 gt_pix_e = system.vae.decode(target.reshape(bf, c, lh, lw))
             pred_pix_e = system.vae.decode(z_end.reshape(bf, c, lh, lw))
+            # Geometry + off-mask energy on the inference endpoint.
             loss_end = loss_end + geometry_aux(pred_pix_e, gt_pix_e)
+            with torch.no_grad():
+                bg_e = gt_pix_e.amin(dim=(2, 3), keepdim=True)
+                fg_e = ((gt_pix_e - bg_e).amax(dim=1, keepdim=True) > 0.08).float()
+            pred_e = (pred_pix_e - pred_pix_e.amin(dim=(2, 3), keepdim=True)
+                      ).amax(dim=1, keepdim=True)
+            loss_end = loss_end + 12.0 * (pred_e * (1.0 - fg_e)).mean()
         loss = loss + endpoint_aux * loss_end
+    return loss
+
+
+def _endpoint_bootstrap_step(system, batch_data, device, geometry_w: float = 2.5):
+    """Few-step Euler → GT only (no RF). Forces inference path to match GT."""
+    from .distill import _few_step
+    from .geometry_loss import geometry_aux
+
+    gen = system.generator
+    target = batch_data["target"].to(device)
+    text_ids = batch_data["text_ids"].to(device)
+    b = target.shape[0]
+    history = batch_data["history"]
+    reference = batch_data["reference"]
+    evicted = batch_data["evicted"]
+    history = history.to(device) if history is not None else None
+    reference = reference.to(device) if reference is not None else None
+    evicted = evicted.to(device) if evicted is not None else None
+
+    memory_state = _build_memory(gen, b, evicted, device)
+    noise = torch.randn_like(target)
+    ctx = gen.encode_context(text_ids, history, reference, memory_state)
+    ss = system.cfg.flow.student_steps
+    z_end = _few_step(lambda zz, s: gen.forward(zz, s, ctx), noise, ss)
+
+    # Latent match is primary (must fall before pixel aux can help).
+    loss = 50.0 * (z_end - target).pow(2).mean()
+    bf, c, lh, lw = b * target.shape[1], target.shape[2], target.shape[3], target.shape[4]
+    with torch.no_grad():
+        gt_pix = system.vae.decode(target.reshape(bf, c, lh, lw))
+        bg = gt_pix.amin(dim=(2, 3), keepdim=True)
+        fg = ((gt_pix - bg).amax(dim=1, keepdim=True) > 0.08).float()
+    pred_pix = system.vae.decode(z_end.reshape(bf, c, lh, lw))
+    if fg.any() and (1 - fg).any():
+        # FG: match GT color; BG: force near-black (kills wash / satellites).
+        loss = loss + 20.0 * ((pred_pix - gt_pix).abs() * fg).sum() / fg.sum().clamp_min(1.0)
+        loss = loss + 20.0 * (pred_pix.abs() * (1.0 - fg)).sum() / (1.0 - fg).sum().clamp_min(1.0)
+    else:
+        loss = loss + 10.0 * (pred_pix - gt_pix).abs().mean()
+    if geometry_w > 0:
+        loss = loss + geometry_w * geometry_aux(pred_pix, gt_pix)
     return loss
 
 
@@ -200,7 +251,8 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
                     lr: float = 6e-4, history_noise: float = 0.15,
                     pixel_aux: float = 0.35, endpoint_aux: float = 0.0,
                     sigma_power: float = 1.0, t2v_first: bool = False,
-                    geometry_w: float = 0.0, log_cb=None) -> None:
+                    geometry_w: float = 0.0, bootstrap_steps: int = 0,
+                    log_cb=None) -> None:
     cfg = system.cfg
     system.vae.eval()
     for p in system.vae.parameters():
@@ -218,7 +270,7 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
     _log(f"[generator] device {device_name(device)} trainable={sum(p.numel() for p in params)/1e6:.1f}M",
          log_cb)
 
-    def run(phase, steps, mode_fn):
+    def run(phase, steps, mode_fn, step_fn):
         t0 = time.time()
         ema = None
         for step in range(steps):
@@ -226,9 +278,7 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
             data = sampler.training_batch(batch, mode=mode,
                                           memory_context_chunks=mctx,
                                           history_noise=hnoise)
-            loss = _flow_step(system, flow, data, device, pixel_aux=pixel_aux,
-                              endpoint_aux=endpoint_aux, sigma_power=sigma_power,
-                              geometry_w=geometry_w)
+            loss = step_fn(data)
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 1.0)
             opt.step()
@@ -238,10 +288,25 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
                      log_cb)
         _log(f"[{phase}] done in {time.time()-t0:.1f}s", log_cb)
 
+    def flow_fn(data):
+        return _flow_step(system, flow, data, device, pixel_aux=pixel_aux,
+                          endpoint_aux=endpoint_aux, sigma_power=sigma_power,
+                          geometry_w=geometry_w)
+
+    def boot_fn(data):
+        return _endpoint_bootstrap_step(system, data, device, geometry_w=geometry_w)
+
+    def text_mode(rng):
+        return ("reference" if rng.random() < 0.2 else "text_only"), 0, 0.0
+
+    # Optional: pure few-step→GT bootstrap (structure before RF mixing).
+    if bootstrap_steps > 0:
+        run("bootstrap", bootstrap_steps, text_mode, boot_fn)
+
     # Stage 1: bidirectional short-clip prior (text-only, some reference).
     def pretrain_mode(rng):
         return ("reference" if rng.random() < 0.3 else "text_only"), 0, 0.0
-    run("pretrain", pretrain_steps, pretrain_mode)
+    run("pretrain", pretrain_steps, pretrain_mode, flow_fn)
 
     # Stage 2: streaming adaptation (history + memory + augmentation).
     def stream_mode(rng):
@@ -261,7 +326,7 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
         if r < 0.8:
             return "text_only", 0, 0.0
         return "reference", 0, 0.0
-    run("stream", stream_steps, stream_mode)
+    run("stream", stream_steps, stream_mode, flow_fn)
     gen.eval()
 
 

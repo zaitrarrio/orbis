@@ -175,14 +175,18 @@ def wan_smoke_config(seed: int = 0) -> OrbisConfig:
 
 
 def wan_structure_micro_config(seed: int = 0) -> OrbisConfig:
-    """64×64 Wan stub for S0 structure proof (see structure-training-methodology)."""
+    """64×64 Wan stub for S0 structure proof (see structure-training-methodology).
+
+    ``student_steps=1``: one Euler step from noise must land on a clean latent —
+    multi-step washes FG/BG energy together (observed S0.1/S0.2 failure mode).
+    """
     world = WorldConfig(height=64, width=64, channels=3, fps=12, hr_scale=2)
     vae = VAEConfig(latent_channels=16, downsample=4, base_channels=32)
     model = ModelConfig(
-        dim=128, depth=6, heads=4, mlp_ratio=4.0, patch_size=2,
+        dim=256, depth=8, heads=8, mlp_ratio=4.0, patch_size=2,
         chunk_frames=4, history_frames=4, memory_tokens=16, text_len=16,
     )
-    flow = FlowConfig(teacher_steps=8, student_steps=4)
+    flow = FlowConfig(teacher_steps=4, student_steps=1)
     sr = SRConfig(scale=2, base_channels=24)
     backbone = BackboneConfig(
         type="wan", wan_stub=True, anchor_reference=True,
