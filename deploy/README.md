@@ -139,6 +139,23 @@ tests (`tests/test_wan21_real_adapter.py`); please run the commands above on
 your rented pod to confirm an end-to-end forward/backward pass and inspect
 sample rollouts.
 
+For a fast, cheap fidelity check before committing to a full training run,
+use the standalone smoke test instead of the full pipeline:
+
+```bash
+uv sync --extra wan
+export HF_HOME=/workspace/hf-cache
+export HUGGINGFACE_HUB_CACHE=/workspace/hf-cache
+uv run python scripts/validate_real_wan.py
+```
+
+This loads the real Wan2.1-1.3B transformer + UMT5 text encoder, runs one
+real forward + backward pass at the configured shapes, checks that
+gradients only reach LoRA/memory parameters (never the frozen base), and
+confirms the saved checkpoint is small (megabytes, not gigabytes) and
+reloads correctly. It does not run VAE pretraining or any posttrain stage
+-- see `scripts/train-live-wan.py --real-wan` above for the full pipeline.
+
 **Known, explicitly scoped fidelity gap:** this phase keeps orbis's own
 already-trained `ConvVAE` (`orbis/vae.py`) for encode/decode, not Wan's
 native `AutoencoderKLWan`. Channel counts are matched (`wan21_real_config()`
