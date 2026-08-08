@@ -205,12 +205,15 @@ def wan_structure_curriculum_config(seed: int = 0) -> OrbisConfig:
 
     128×128 with VAE÷4 and patch_size=2 keeps the object spanning many tokens
     so spatial structure can converge before scaling to 480p.
+
+    Wider/deeper than S0 (256/8): 128² has 4× spatial tokens; same 13M stub
+    plateaued at dim speckles with empty mid-frames.
     """
     world = WorldConfig(height=128, width=128, channels=3, fps=12, hr_scale=2)
     vae = VAEConfig(latent_channels=16, downsample=4, base_channels=48)
     model = ModelConfig(
-        dim=256, depth=8, heads=8, mlp_ratio=4.0, patch_size=2,
-        chunk_frames=4, history_frames=4, memory_tokens=16, text_len=32,
+        dim=384, depth=12, heads=8, mlp_ratio=4.0, patch_size=2,
+        chunk_frames=4, history_frames=4, memory_tokens=24, text_len=32,
     )
     flow = FlowConfig(teacher_steps=12, student_steps=4)
     sr = SRConfig(scale=2, base_channels=32)

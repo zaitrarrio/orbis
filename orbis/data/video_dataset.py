@@ -132,14 +132,20 @@ class SyntheticVideoDataset:
         H, W = self.cfg.world.height, self.cfg.world.width
         spec = sample_scene(self.rng)
         n = self.cfg.model.chunk_frames * 4
-        # Mid-rollout attribute change at halfway
+        # Mid-rollout attribute change at halfway (color and/or shape+direction)
         switch_t = n // 2
-        schedule = {switch_t: {"color": self.rng.choice(
-            ["red", "blue", "green", "yellow", "cyan", "magenta"])}}
-        frames, _ = rollout(spec, n, H, W, control_schedule=schedule)
+        patch = {"color": self.rng.choice(
+            ["red", "blue", "green", "yellow", "cyan", "magenta"])}
+        if self.rng.random() < 0.6:
+            patch["shape"] = self.rng.choice(["circle", "square", "triangle"])
+        if self.rng.random() < 0.5:
+            patch["direction"] = self.rng.choice(
+                ["left", "right", "up", "down"])
+        schedule = {switch_t: patch}
+        frames, specs = rollout(spec, n, H, W, control_schedule=schedule)
         cap0 = f"a {spec.color} {spec.shape} moving {spec.direction}"
-        new_color = schedule[switch_t]["color"]
-        cap1 = f"a {new_color} {spec.shape} moving {spec.direction}"
+        spec1 = specs[min(switch_t, len(specs) - 1)]
+        cap1 = f"a {spec1.color} {spec1.shape} moving {spec1.direction}"
         events = [
             EventCaption(t=0.0, text=cap0),
             EventCaption(t=switch_t / max(self.cfg.world.fps, 1), text=cap1),

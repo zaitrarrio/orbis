@@ -205,8 +205,13 @@ def _flow_step(system, flow, batch_data, device, pixel_aux: float = 0.35,
     return loss
 
 
-def _endpoint_bootstrap_step(system, batch_data, device, geometry_w: float = 2.5):
-    """Few-step Euler → GT only (no RF). Forces inference path to match GT."""
+def _endpoint_bootstrap_step(system, batch_data, device, geometry_w: float = 2.5,
+                             shrink: bool = False):
+    """Few-step Euler → GT only (no RF). Forces inference path to match GT.
+
+    ``shrink=True`` down-weights latent MSE and up-weights BG/size so oversized
+    480p blobs (bright_pct≫18) can compact without being held by latent fit.
+    """
     from .distill import _few_step
     from .geometry_loss import geometry_aux
 
@@ -228,7 +233,8 @@ def _endpoint_bootstrap_step(system, batch_data, device, geometry_w: float = 2.5
     z_end = _few_step(lambda zz, s: gen.forward(zz, s, ctx), noise, ss)
 
     # Latent match is primary (must fall before pixel aux can help).
-    loss = 50.0 * (z_end - target).pow(2).mean()
+    lat_w = 15.0 if shrink else 50.0
+    loss = lat_w * (z_end - target).pow(2).mean()
     bf, c, lh, lw = b * target.shape[1], target.shape[2], target.shape[3], target.shape[4]
     with torch.no_grad():
         gt_pix = system.vae.decode(target.reshape(bf, c, lh, lw))
@@ -237,8 +243,30 @@ def _endpoint_bootstrap_step(system, batch_data, device, geometry_w: float = 2.5
     pred_pix = system.vae.decode(z_end.reshape(bf, c, lh, lw))
     if fg.any() and (1 - fg).any():
         # FG: match GT color; BG: force near-black (kills wash / satellites).
-        loss = loss + 20.0 * ((pred_pix - gt_pix).abs() * fg).sum() / fg.sum().clamp_min(1.0)
-        loss = loss + 20.0 * (pred_pix.abs() * (1.0 - fg)).sum() / (1.0 - fg).sum().clamp_min(1.0)
+        bg_w = 45.0 if shrink else 15.0
+        loss = loss + 25.0 * ((pred_pix - gt_pix).abs() * fg).sum() / fg.sum().clamp_min(1.0)
+        loss = loss + bg_w * (pred_pix.abs() * (1.0 - fg)).sum() / (1.0 - fg).sum().clamp_min(1.0)
+        # Soft gate-aligned bright fraction (hard >0.35 has no grad).
+        pred_amax = pred_pix.amax(dim=1, keepdim=True)
+        gt_bright_frac = (gt_pix.amax(dim=1, keepdim=True) > 0.35).float().mean()
+        pred_bright_soft = torch.sigmoid((pred_amax - 0.35) * 25.0).mean()
+        bright_err = (pred_bright_soft - gt_bright_frac).abs()
+        over_bright = torch.relu(pred_bright_soft - gt_bright_frac)
+        bw = 80.0 if shrink else 25.0
+        loss = loss + bw * bright_err + (120.0 if shrink else 0.0) * over_bright
+        # Brightness prior: FG must stay vivid (gate uses max>0.35).
+        fg_pred = (pred_pix.abs() * fg).sum() / fg.sum().clamp_min(1.0)
+        fg_gt = (gt_pix.abs() * fg).sum() / fg.sum().clamp_min(1.0)
+        loss = loss + 20.0 * (fg_pred - fg_gt).abs()
+        # Soft size prior (hard threshold has no grad through mask).
+        pred_e = (pred_pix - pred_pix.amin(dim=(2, 3), keepdim=True)
+                  ).amax(dim=1, keepdim=True)
+        pred_frac = torch.sigmoid((pred_e - 0.08) * 30.0).mean()
+        gt_frac = fg.mean()
+        size_err = (pred_frac - gt_frac).abs()
+        over = torch.relu(pred_frac - gt_frac)
+        over_w = 100.0 if shrink else 40.0
+        loss = loss + 30.0 * size_err + over_w * over
     else:
         loss = loss + 10.0 * (pred_pix - gt_pix).abs().mean()
     if geometry_w > 0:
@@ -252,7 +280,7 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
                     pixel_aux: float = 0.35, endpoint_aux: float = 0.0,
                     sigma_power: float = 1.0, t2v_first: bool = False,
                     geometry_w: float = 0.0, bootstrap_steps: int = 0,
-                    log_cb=None) -> None:
+                    shrink: bool = False, log_cb=None) -> None:
     cfg = system.cfg
     system.vae.eval()
     for p in system.vae.parameters():
@@ -294,7 +322,8 @@ def train_generator(system: OrbisSystem, pretrain_steps: int = 600,
                           geometry_w=geometry_w)
 
     def boot_fn(data):
-        return _endpoint_bootstrap_step(system, data, device, geometry_w=geometry_w)
+        return _endpoint_bootstrap_step(
+            system, data, device, geometry_w=geometry_w, shrink=shrink)
 
     def text_mode(rng):
         return ("reference" if rng.random() < 0.2 else "text_only"), 0, 0.0
