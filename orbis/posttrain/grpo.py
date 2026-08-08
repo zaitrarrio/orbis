@@ -19,13 +19,7 @@ from orbis.system import OrbisSystem
 from orbis.train import _build_memory, _log
 
 
-def _few_step(vel_fn, noise, steps):
-    z = noise
-    sigmas = torch.linspace(1.0, 0.0, steps + 1, device=noise.device)
-    for i in range(steps):
-        s = sigmas[i].expand(z.shape[0])
-        z = z - (sigmas[i] - sigmas[i + 1]) * vel_fn(z, s)
-    return z
+from orbis.distill import _few_step  # noqa: F401
 
 
 def grpo_align(
@@ -71,12 +65,14 @@ def grpo_align(
         ctx = student.encode_context(text_ids, history, reference, mem)
         pooled = ctx.pooled_text
 
-        # Sample G candidates (different noise)
+        # Sample G candidates (different noise); no grad — scoring only.
         cands = []
-        for _ in range(group_size):
-            noise = torch.randn_like(target)
-            z = _few_step(lambda zz, s: student.forward(zz, s, ctx), noise, ss)
-            cands.append(z)
+        with torch.no_grad():
+            for _ in range(group_size):
+                noise = torch.randn_like(target)
+                z = _few_step(
+                    lambda zz, s: student.forward(zz, s, ctx), noise, ss)
+                cands.append(z)
         stacked = torch.stack(cands, dim=1)          # (B, G, F, C, H, W)
 
         # Score each candidate
@@ -101,7 +97,8 @@ def grpo_align(
         best = stacked[torch.arange(b, device=device), best_idx].detach()
 
         noise = torch.randn_like(target)
-        z_new = _few_step(lambda zz, s: student.forward(zz, s, ctx), noise, ss)
+        z_new = _few_step(
+            lambda zz, s: student.forward(zz, s, ctx), noise, ss)
         # Align new sample to best candidate + world-model consistency via reward loss
         policy_loss = (z_new - best).pow(2).mean()
         # Train world model on GT targets

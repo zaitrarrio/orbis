@@ -55,7 +55,7 @@ query="$(jq -n \
     num_gpus: {eq: $n},
     dph_total: {lte: $dph},
     disk_space: {gte: $disk},
-    cuda_max_good: {gte: 12.4},
+    cuda_max_good: {gte: 12.8},
     reliability: {gte: 0.98},
     direct_port_count: {gte: 1},
     inet_down: {gte: $inet},

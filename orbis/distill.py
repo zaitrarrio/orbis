@@ -23,13 +23,24 @@ from .system import OrbisSystem
 from .train import _build_memory, _log
 
 
-def _few_step(vel_fn, noise, steps):
-    """Grad-enabled few-step Euler rollout noise(sigma=1) -> data(sigma=0)."""
+def _few_step(vel_fn, noise, steps, last_grad_only: bool = False):
+    """Grad-enabled few-step Euler rollout noise(sigma=1) -> data(sigma=0).
+
+    ``last_grad_only=True`` runs earlier Euler steps under ``no_grad`` and only
+    backprops through the final step — required to fit student_steps≥4 endpoint
+    training on 24GB at 480p (full unrolled graph OOMs).
+    """
     z = noise
     sigmas = torch.linspace(1.0, 0.0, steps + 1, device=noise.device)
     for i in range(steps):
         s = sigmas[i].expand(z.shape[0])
-        z = z - (sigmas[i] - sigmas[i + 1]) * vel_fn(z, s)
+        dt = sigmas[i] - sigmas[i + 1]
+        if last_grad_only and i < steps - 1:
+            with torch.no_grad():
+                z = z - dt * vel_fn(z, s)
+            z = z.detach()
+        else:
+            z = z - dt * vel_fn(z, s)
     return z
 
 

@@ -19,13 +19,7 @@ def _ema_update(ema: torch.nn.Module, student: torch.nn.Module, decay: float):
         e.data.mul_(decay).add_(s.data, alpha=1.0 - decay)
 
 
-def _few_step(vel_fn, noise, steps):
-    z = noise
-    sigmas = torch.linspace(1.0, 0.0, steps + 1, device=noise.device)
-    for i in range(steps):
-        s = sigmas[i].expand(z.shape[0])
-        z = z - (sigmas[i] - sigmas[i + 1]) * vel_fn(z, s)
-    return z
+from orbis.distill import _few_step  # noqa: F401
 
 
 def ema_consistency_distill(

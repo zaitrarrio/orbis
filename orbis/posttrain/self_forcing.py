@@ -19,13 +19,7 @@ from orbis.system import OrbisSystem
 from orbis.train import _build_memory, _log
 
 
-def _few_step(vel_fn, noise, steps):
-    z = noise
-    sigmas = torch.linspace(1.0, 0.0, steps + 1, device=noise.device)
-    for i in range(steps):
-        s = sigmas[i].expand(z.shape[0])
-        z = z - (sigmas[i] - sigmas[i + 1]) * vel_fn(z, s)
-    return z
+from orbis.distill import _few_step  # noqa: F401
 
 
 @torch.no_grad()

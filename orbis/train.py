@@ -178,7 +178,8 @@ def _flow_step(system, flow, batch_data, device, pixel_aux: float = 0.35,
     # Match the few-step Euler endpoint used at inference (train≠sample gap).
     if endpoint_aux > 0:
         ss = system.cfg.flow.student_steps
-        z_end = _few_step(lambda zz, ss_: gen.forward(zz, ss_, ctx), noise, ss)
+        z_end = _few_step(
+            lambda zz, ss_: gen.forward(zz, ss_, ctx), noise, ss)
         err_end = (z_end - target).pow(2)
         ww = w
         while ww.dim() < err_end.dim():
@@ -230,7 +231,8 @@ def _endpoint_bootstrap_step(system, batch_data, device, geometry_w: float = 2.5
     noise = torch.randn_like(target)
     ctx = gen.encode_context(text_ids, history, reference, memory_state)
     ss = system.cfg.flow.student_steps
-    z_end = _few_step(lambda zz, s: gen.forward(zz, s, ctx), noise, ss)
+    z_end = _few_step(
+        lambda zz, s: gen.forward(zz, s, ctx), noise, ss)
 
     # Latent match is primary (must fall before pixel aux can help).
     lat_w = 15.0 if shrink else 50.0
