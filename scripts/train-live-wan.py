@@ -136,6 +136,14 @@ def main():
     ap.add_argument("--wan-text-encoder", default=None,
                     help="HF repo/path for the UMT5 tokenizer/text encoder "
                     "used by --real-wan (default: same repo as --wan-checkpoint)")
+    ap.add_argument("--real-wan-vae", action="store_true",
+                    help="Encode/decode with Wan's own real, frozen, "
+                    "pretrained AutoencoderKLWan (orbis.adapters.wan21_vae."
+                    "RealWanVAE) instead of orbis's toy ConvVAE. Closes the "
+                    "latent-distribution fidelity gap for --real-wan. "
+                    "Requires --real-wan and `uv sync --extra wan`. Skips "
+                    "the VAE training/calibration stage entirely (the "
+                    "pretrained VAE is frozen and never trained).")
     ap.add_argument("--no-posttrain", action="store_true",
                     help="Skip guidance/EMA/DMD/GRPO (faster; use until shapes work)")
     ap.add_argument("--resume", default=None,
@@ -152,6 +160,10 @@ def main():
                     help="GRPO SDE exploration noise scale (default: "
                          "GRPOConfig.sde_eta=0.3). Must be > 0.")
     args = ap.parse_args()
+    if args.real_wan_vae and not args.real_wan:
+        ap.error("--real-wan-vae requires --real-wan (the real Wan VAE's "
+                  "latent space is only meaningful paired with the real "
+                  "Wan transformer)")
 
     device = get_device()
     print(f"[wan-live] device {device_name(device)}")
@@ -166,7 +178,8 @@ def main():
         cfg = wan_structure_curriculum_config()
     elif args.real_wan:
         cfg = wan21_real_config(checkpoint_path=args.wan_checkpoint,
-                                 text_encoder_path=args.wan_text_encoder)
+                                 text_encoder_path=args.wan_text_encoder,
+                                 real_vae=args.real_wan_vae)
     else:
         cfg = wan_real_scale_config(stub=not args.load_hf)
     if args.load_hf:
@@ -232,8 +245,18 @@ def main():
             vae_steps = 800
         else:
             vae_steps = 2500
-        train_vae(system, steps=s(vae_steps), batch=vae_bs,
-                  lr=3e-4 if not args.smoke else 1e-3)
+        if getattr(cfg.backbone, "real_vae", False):
+            # RealWanVAE wraps a frozen, pretrained AutoencoderKLWan -- there
+            # is nothing to train and no scalar to calibrate (normalization
+            # uses the checkpoint's own real latents_mean/latents_std). Also,
+            # train_vae() reaches into ConvVAE-specific internals
+            # (`.encoder`, `.latent_scale`) that RealWanVAE intentionally
+            # does not implement, so calling it here would raise.
+            print("[vae] skipped -- real_vae=True uses a frozen, pretrained "
+                  "AutoencoderKLWan (no training/calibration needed)")
+        else:
+            train_vae(system, steps=s(vae_steps), batch=vae_bs,
+                      lr=3e-4 if not args.smoke else 1e-3)
         _gc()
 
     if args.resume and args.finetune_steps > 0:
