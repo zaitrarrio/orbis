@@ -61,8 +61,19 @@ def test_grpo_align_runs_and_produces_finite_loss():
 
 def test_grpo_gradients_isolated_to_trainable_params():
     """Mirrors Phase 1a's gradient-isolation check: only LoRA/trainable params
-    of the generator should move, nothing in the frozen base."""
+    of the generator should move, nothing in the frozen base.
+
+    grpo_align() moves `system` onto get_device() internally (CUDA when
+    available, matching Phase 1a's training path), so the "before" snapshot
+    must be taken on that same device -- not on whatever device
+    OrbisSystem.build() happened to construct the model on -- or the
+    before/after comparison below raises a cross-device RuntimeError on a
+    real GPU box instead of doing the intended comparison.
+    """
+    from orbis.device import get_device
+
     system, batch_fn = _make_system_and_batch_fn(seed=2)
+    system.to(get_device())
     gen = system.generator
     trainable_names = {
         n for n, p in gen.named_parameters() if p.requires_grad
@@ -81,7 +92,7 @@ def test_grpo_gradients_isolated_to_trainable_params():
 
     after = dict(gen.named_parameters())
     moved_frozen = [n for n in frozen_names
-                    if not torch.allclose(before[n], after[n].detach())]
+                    if not torch.allclose(before[n], after[n].detach().to(before[n].device))]
     assert moved_frozen == [], f"frozen params moved: {moved_frozen}"
 
 

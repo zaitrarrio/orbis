@@ -56,6 +56,28 @@ _CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 _CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 
 
+def _pooled(features):
+    """Normalize CLIPModel.get_{image,text}_features()'s return value across
+    transformers versions.
+
+    transformers < ~4.5x returns a plain ``(B, D)`` tensor. Newer versions
+    (observed on 5.14.1, decorated ``@can_return_tuple``) instead return a
+    ``BaseModelOutputWithPooling`` whose ``.pooler_output`` holds the
+    already-projected ``(B, D)`` embedding -- confirmed by reading
+    ``CLIPModel.get_image_features``/``get_text_features`` source, both of
+    which do ``vision_outputs.pooler_output = self.visual_projection(pooled_output)``
+    (resp. ``text_projection``) before returning the wrapped output. Handle
+    both so this doesn't silently break again on a future transformers bump.
+    """
+    if isinstance(features, torch.Tensor):
+        return features
+    if hasattr(features, "pooler_output") and features.pooler_output is not None:
+        return features.pooler_output
+    raise TypeError(
+        f"Unexpected return type from CLIPModel get_*_features: {type(features)!r} "
+        "(expected a Tensor or an object with .pooler_output)")
+
+
 def _to_three_channel(px: torch.Tensor) -> torch.Tensor:
     if px.shape[1] == 1:
         return px.repeat(1, 3, 1, 1)
@@ -148,12 +170,12 @@ class ClipAlignmentReward(RewardModel):
         std = torch.tensor(_CLIP_STD, device=device).view(1, 3, 1, 1)
         px = (px - mean) / std
 
-        img_feat = model.get_image_features(pixel_values=px)
+        img_feat = _pooled(model.get_image_features(pixel_values=px))
         img_feat = F.normalize(img_feat, dim=-1).view(b, f, -1)
 
         text_inputs = tok(list(prompts), padding=True, truncation=True,
                           return_tensors="pt").to(device)
-        txt_feat = model.get_text_features(**text_inputs)
+        txt_feat = _pooled(model.get_text_features(**text_inputs))
         txt_feat = F.normalize(txt_feat, dim=-1)  # (B, D)
 
         sim = (img_feat * txt_feat.unsqueeze(1)).sum(dim=-1)  # (B, F)
@@ -224,7 +246,7 @@ class AestheticReward(RewardModel):
         mean = torch.tensor(_CLIP_MEAN, device=device).view(1, 3, 1, 1)
         std = torch.tensor(_CLIP_STD, device=device).view(1, 3, 1, 1)
         px = (px - mean) / std
-        img_feat = model.get_image_features(pixel_values=px)
+        img_feat = _pooled(model.get_image_features(pixel_values=px))
         score = self.head(img_feat).squeeze(-1).view(b, f)
         return score.mean(dim=1)
 
