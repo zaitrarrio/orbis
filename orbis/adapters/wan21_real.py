@@ -370,6 +370,20 @@ class RealWanBackbone(nn.Module):
         cat = torch.cat(frame_groups, dim=1)
         hidden_states = cat.permute(0, 2, 1, 3, 4).contiguous()
 
+        # The frozen base transformer is typically loaded in bf16
+        # (`BackboneConfig.use_bf16`, on by default) while orbis's own VAE
+        # latents / MemoryBank projections / the caller's synthetic tensors
+        # are plain float32 -- real GPU hardware enforces this mismatch
+        # (`WanTransformer3DModel`'s conv/linear weights reject float32
+        # input), whereas the CPU mock transformer in
+        # ``tests/test_wan21_real_adapter.py`` is float32 throughout and
+        # never exercises this path. Upcast/downcast at this single
+        # boundary rather than changing storage dtype anywhere else, so
+        # gradients still accumulate in the caller's (float32) precision.
+        base_dtype = next(self.transformer.parameters()).dtype
+        hidden_states = hidden_states.to(base_dtype)
+        encoder_hidden_states = encoder_hidden_states.to(base_dtype)
+
         timestep = sigma.reshape(-1).to(hidden_states.dtype) * self.num_train_timesteps
 
         out = self.transformer(
@@ -380,6 +394,7 @@ class RealWanBackbone(nn.Module):
         )
         out = out[0] if isinstance(out, (tuple, list)) else out
         out = out.permute(0, 2, 1, 3, 4).contiguous()  # back to (B, F_total, C, H, W)
+        out = out.to(z_noised.dtype)  # restore caller's precision for the flow loss
         # History/reference frames are read-only conditioning (already
         # "committed", per the paper's streaming semantics); only the
         # noised-chunk slice is supervised by the flow loss.
