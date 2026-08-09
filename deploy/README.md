@@ -145,9 +145,22 @@ use the standalone smoke test instead of the full pipeline:
 ```bash
 uv sync --extra wan
 export HF_HOME=/workspace/hf-cache
-export HUGGINGFACE_HUB_CACHE=/workspace/hf-cache
 uv run python scripts/validate_real_wan.py
+# Also validate the real, frozen Wan VAE (see below) end to end:
+uv run python scripts/validate_real_wan.py --real-vae
 ```
+
+Only export `HF_HOME` — `huggingface_hub` resolves the actual cache
+directory to `$HF_HOME/hub` by default. Also exporting
+`HUGGINGFACE_HUB_CACHE=/workspace/hf-cache` (i.e. the *same* path as
+`HF_HOME`, missing the `/hub` suffix) makes `huggingface_hub` cache into a
+different, flat `$HF_HOME/models--...` layout instead of reusing the
+existing `$HF_HOME/hub/models--...` cache — silently triggering a full
+multi-GB re-download of the transformer, text encoder, and VAE on every
+run, and can fill a small instance's disk. Confirmed on real hardware
+while validating the VAE swap below; if you see repeated "Fetching N
+files" downloads despite weights already being cached, check for this
+env var mismatch first.
 
 This loads the real Wan2.1-1.3B transformer + UMT5 text encoder, runs one
 real forward + backward pass at the configured shapes, checks that
@@ -156,16 +169,39 @@ confirms the saved checkpoint is small (megabytes, not gigabytes) and
 reloads correctly. It does not run VAE pretraining or any posttrain stage
 -- see `scripts/train-live-wan.py --real-wan` above for the full pipeline.
 
-**Known, explicitly scoped fidelity gap:** this phase keeps orbis's own
-already-trained `ConvVAE` (`orbis/vae.py`) for encode/decode, not Wan's
-native `AutoencoderKLWan`. Channel counts are matched (`wan21_real_config()`
-sets 16 latent channels to mirror Wan's transformer `in_channels=16`), so
-shapes are compatible, but the *latent distribution* orbis's VAE produces
-wasn't what Wan was pretrained against — LoRA fine-tuning is expected to
-adapt the frozen transformer to this shift. Swapping in the real
-`AutoencoderKLWan` for the full pipeline is a larger, riskier change and is
-intentionally deferred to a follow-up PR (see PR description) to keep this
-change reviewable.
+**Real Wan VAE (closes the fidelity gap below):** pass `--real-vae` to
+`validate_real_wan.py`, or `--real-wan-vae` (alongside `--real-wan`) to
+`train-live-wan.py`, to encode/decode with Wan's own real, frozen,
+pretrained `AutoencoderKLWan` (`orbis/adapters/wan21_vae.py`) instead of
+orbis's toy `ConvVAE`. It wraps `AutoencoderKLWan` per-frame (each frame
+as a `T=1` "video", verified on real hardware to always yield exactly one
+temporal latent — no cross-frame temporal compression is engaged), and
+applies the checkpoint's own real per-channel `latents_mean`/`latents_std`
+normalization, so `RealWanBackbone` sees the *exact* latent space it was
+pretrained against. It is fully frozen (no LoRA), and its `state_dict()`
+is intentionally empty (nothing trainable to checkpoint — a fresh
+`from_pretrained()` always reconstructs an identical instance). Confirmed
+end to end on a real H100: `vae encode`/`vae decode` at the configured
+480x832 shape, a combined `RealWanBackbone` + `RealWanVAE` forward +
+backward pass with zero gradient leakage into either frozen component,
+and correct lean-checkpoint save/reload.
+
+Genuine multi-frame temporal VAE compression across chunks (using `T>1`
+so Wan's causal temporal downsampling actually engages, rather than the
+`T=1` per-frame special case used here) is a materially larger, riskier
+rewrite of the chunk pipeline and remains an explicitly scoped-out,
+further-deferred fidelity gap.
+
+**Previously known, now-closeable fidelity gap:** by default (`real_vae`
+not set), this phase still keeps orbis's own already-trained `ConvVAE`
+(`orbis/vae.py`) for encode/decode, not Wan's native `AutoencoderKLWan`.
+Channel counts are matched (`wan21_real_config()` sets 16 latent channels
+to mirror Wan's transformer `in_channels=16`), so shapes are compatible,
+but the *latent distribution* orbis's VAE produces wasn't what Wan was
+pretrained against — LoRA fine-tuning is expected to adapt the frozen
+transformer to this shift. Pass `--real-vae`/`--real-wan-vae` (see above)
+to close this gap; it defaults to off to keep the base `--real-wan` path's
+existing (CPU-testable) behavior unchanged.
 
 ### Flow-GRPO / DanceGRPO-style RL post-training (Phase 1b)
 

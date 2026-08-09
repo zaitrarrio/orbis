@@ -19,6 +19,19 @@ shapes to confirm:
   * ``state_dict()``/checkpoint save round-trips a SMALL file (prints
     size) rather than the multi-GB frozen base
 
+With ``--real-vae`` this additionally loads the real, frozen
+``diffusers.AutoencoderKLWan`` (``orbis.adapters.wan21_vae.RealWanVAE``)
+and confirms:
+
+  * real pixel frames encode/decode to/from the exact latent shape
+    (`latent_channels`, `latent_hw`) the real Wan transformer expects
+  * decoded pixels stay in `[0, 1]` and are finite
+  * gradients flow from a `velocity()` call, through the frozen VAE's
+    `decode()`, back to the *backbone's* trainable LoRA/memory params
+    (not into the frozen VAE or the frozen transformer base) -- this is
+    the realistic training-time gradient path once both are combined
+  * the VAE's own `state_dict()` is empty (nothing new to checkpoint)
+
 This intentionally does NOT run the full 7-stage pipeline in
 ``scripts/train-live-wan.py`` (VAE pretraining, guidance distillation,
 DMD, GRPO, streaming SR) -- that is a much longer, more expensive run
@@ -30,6 +43,7 @@ Usage (see deploy/README.md):
     uv sync --extra wan
     export HF_HOME=/workspace/hf-cache
     python scripts/validate_real_wan.py
+    python scripts/validate_real_wan.py --real-vae
 """
 
 from __future__ import annotations
@@ -55,6 +69,10 @@ def main() -> None:
                     help="HF repo/path for UMT5 tokenizer/encoder (default: same as --checkpoint)")
     ap.add_argument("--batch", type=int, default=1)
     ap.add_argument("--ckpt-out", default="/tmp/orbis-real-wan-smoke.pt")
+    ap.add_argument("--real-vae", action="store_true",
+                    help="Also load and validate orbis.adapters.wan21_vae."
+                    "RealWanVAE (real, frozen AutoencoderKLWan) end to end "
+                    "with the real backbone.")
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -65,9 +83,11 @@ def main() -> None:
               "very slow and is not representative of real usage.")
 
     cfg = wan21_real_config(checkpoint_path=args.checkpoint,
-                             text_encoder_path=args.text_encoder)
+                             text_encoder_path=args.text_encoder,
+                             real_vae=args.real_vae)
     print(f"[validate-real-wan] checkpoint={cfg.backbone.checkpoint_path} "
-          f"text_encoder={cfg.backbone.text_encoder_path or '(same repo)'}")
+          f"text_encoder={cfg.backbone.text_encoder_path or '(same repo)'} "
+          f"real_vae={cfg.backbone.real_vae}")
 
     t0 = time.time()
     print("[validate-real-wan] loading real Wan2.1-1.3B transformer + UMT5 "
@@ -84,6 +104,51 @@ def main() -> None:
     assert frac < 0.05, (
         "expected LoRA + memory/projection trainable params to be a small "
         f"fraction of the frozen base transformer, got {frac:.2%}")
+
+    vae = None
+    if args.real_vae:
+        from orbis.adapters.wan21_vae import RealWanVAE
+        t0 = time.time()
+        print("[validate-real-wan] loading real, frozen AutoencoderKLWan "
+              "from Hugging Face (first run downloads weights) ...")
+        vae = RealWanVAE.from_pretrained(
+            cfg.backbone.checkpoint_path, latent_channels=cfg.vae.latent_channels
+        ).to(device)
+        print(f"[validate-real-wan] vae loaded in {time.time() - t0:.1f}s")
+        assert all(not p.requires_grad for p in vae.model.parameters()), (
+            "RealWanVAE's underlying model must be fully frozen")
+
+        h, w = cfg.world.height, cfg.world.width
+        lh, lw = cfg.latent_hw
+        frames = torch.rand(2, 3, h, w, device=device)
+        t0 = time.time()
+        z = vae.encode(frames)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        print(f"[validate-real-wan] vae encode in {time.time() - t0:.1f}s, "
+              f"latent shape {tuple(z.shape)} (expected "
+              f"{(2, cfg.vae.latent_channels, lh, lw)})")
+        assert z.shape == (2, cfg.vae.latent_channels, lh, lw), (
+            f"vae latent shape {tuple(z.shape)} does not match cfg.latent_hw "
+            f"{cfg.latent_hw} / latent_channels {cfg.vae.latent_channels}")
+        assert torch.isfinite(z).all(), "vae encode produced non-finite values"
+
+        t0 = time.time()
+        rec = vae.decode(z)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        print(f"[validate-real-wan] vae decode in {time.time() - t0:.1f}s, "
+              f"output shape {tuple(rec.shape)}")
+        assert rec.shape == frames.shape
+        assert torch.isfinite(rec).all(), "vae decode produced non-finite values"
+        assert rec.min() >= 0.0 and rec.max() <= 1.0, (
+            f"decoded frames out of [0,1] range: [{rec.min():.4f}, {rec.max():.4f}]")
+
+        vae_sd = vae.state_dict()
+        print(f"[validate-real-wan] vae state_dict has {len(vae_sd)} tensors "
+              "(expected 0 -- frozen, nothing to checkpoint)")
+        assert vae_sd == {}, "RealWanVAE.state_dict() should be empty (frozen)"
+        print("[validate-real-wan] real VAE round-trip checks PASSED")
 
     b = args.batch
     lh, lw = cfg.latent_hw
@@ -105,11 +170,24 @@ def main() -> None:
           f"output shape {tuple(out.shape)} (expected {tuple(z.shape)})")
     assert out.shape == z.shape, f"shape mismatch: {out.shape} != {z.shape}"
 
-    t0 = time.time()
-    out.float().sum().backward()
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    print(f"[validate-real-wan] backward pass in {time.time() - t0:.1f}s")
+    if vae is not None:
+        # Realistic end-to-end gradient path: backbone output (predicted
+        # velocity in latent space) decoded to pixels through the frozen
+        # VAE, loss taken in pixel space -- mirrors how orbis.train's
+        # reconstruction losses actually use vae.decode(...).
+        t0 = time.time()
+        pix = vae.decode(out.reshape(b * cf, lc, lh, lw))
+        pix.float().sum().backward()
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        print(f"[validate-real-wan] combined backbone+vae backward pass in "
+              f"{time.time() - t0:.1f}s")
+    else:
+        t0 = time.time()
+        out.float().sum().backward()
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        print(f"[validate-real-wan] backward pass in {time.time() - t0:.1f}s")
 
     lora_grad, base_grad_leak = 0, 0
     for n, p in gen.named_parameters():
@@ -123,6 +201,13 @@ def main() -> None:
           f"frozen-base-leak={base_grad_leak}")
     assert base_grad_leak == 0, "gradient leaked into frozen base weights!"
     assert lora_grad > 0, "no gradient reached any trainable parameter!"
+
+    if vae is not None:
+        vae_grad_leak = sum(
+            1 for p in vae.model.parameters() if p.grad is not None)
+        print(f"[validate-real-wan] frozen VAE params with grad: {vae_grad_leak} "
+              "(expected 0)")
+        assert vae_grad_leak == 0, "gradient leaked into the frozen VAE!"
 
     sd = gen.state_dict()
     torch.save(sd, args.ckpt_out)

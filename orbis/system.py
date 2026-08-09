@@ -15,10 +15,25 @@ from .superres import SuperResolution
 from .vae import ConvVAE
 
 
+def _build_vae(cfg: OrbisConfig) -> nn.Module:
+    """ConvVAE (default, CPU-testable) or the real frozen Wan VAE (opt-in).
+
+    Lazily imports ``orbis.adapters.wan21_vae`` only when
+    ``backbone.real_vae`` is set, so the ``diffusers``-free toy/stub paths
+    are unaffected -- mirrors how ``adapters/factory.py`` lazily imports
+    ``wan21_real`` only when ``backbone.real_weights`` is set.
+    """
+    if cfg.backbone.type == "wan" and getattr(cfg.backbone, "real_vae", False):
+        from .adapters.wan21_vae import RealWanVAE
+        return RealWanVAE.from_pretrained(
+            cfg.backbone.checkpoint_path, latent_channels=cfg.vae.latent_channels)
+    return ConvVAE(cfg.vae, cfg.world)
+
+
 @dataclass
 class OrbisSystem:
     cfg: OrbisConfig
-    vae: ConvVAE
+    vae: nn.Module
     generator: nn.Module
     sr: SuperResolution
     distilled: bool = False
@@ -27,7 +42,7 @@ class OrbisSystem:
     def build(cfg: Optional[OrbisConfig] = None) -> "OrbisSystem":
         cfg = cfg or OrbisConfig()
         torch.manual_seed(cfg.seed)
-        vae = ConvVAE(cfg.vae, cfg.world)
+        vae = _build_vae(cfg)
         gen = build_backbone(cfg)
         sr = SuperResolution(cfg.sr, cfg.world)
         return OrbisSystem(cfg=cfg, vae=vae, generator=gen, sr=sr)
@@ -65,6 +80,10 @@ class OrbisSystem:
         ckpt = torch.load(path, map_location=device, weights_only=False)
         cfg = OrbisConfig.from_dict(ckpt["config"])
         sys = OrbisSystem.build(cfg)
+        # RealWanVAE.load_state_dict is a no-op (frozen, nothing persisted;
+        # OrbisSystem.build already reconstructed an identical instance via
+        # from_pretrained); ConvVAE.load_state_dict restores trained weights
+        # as before.
         sys.vae.load_state_dict(ckpt["vae"])
         # Full generator first (includes LoRA tensors when present).
         if "generator" in ckpt:

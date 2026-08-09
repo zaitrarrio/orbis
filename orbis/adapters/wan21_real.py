@@ -57,6 +57,11 @@ Wan its own native VAE latents end-to-end. Swapping in the real
 ``AutoencoderKLWan`` for the full pipeline is intentionally left for a
 follow-up phase (see PR description) to keep this change reviewable.
 
+UPDATE: this gap is now optionally closeable -- see
+``orbis/adapters/wan21_vae.py`` (``RealWanVAE``) and
+``BackboneConfig.real_vae`` / ``--real-wan-vae``. Off by default to keep
+this module's own existing (CPU-testable) behavior unchanged.
+
 Requires the optional ``wan`` extra (``uv sync --extra wan``) and, for
 anything beyond CPU shape/plumbing tests, a real GPU to download and run the
 1.3B checkpoint -- see ``deploy/README.md``. CPU unit tests

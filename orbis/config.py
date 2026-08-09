@@ -82,6 +82,15 @@ class BackboneConfig:
     # Requires the ``wan`` extra (diffusers/transformers) and, for anything
     # beyond CPU shape tests, a real GPU (see deploy/README.md).
     real_weights: bool = False
+    # Encode/decode with Wan's own real, frozen, pretrained AutoencoderKLWan
+    # (orbis/adapters/wan21_vae.py) instead of orbis's own toy ConvVAE
+    # (orbis/vae.py). Closes the "latent distribution mismatch" fidelity gap
+    # documented in wan21_real.py's module docstring: the frozen
+    # RealWanBackbone transformer then sees the exact latent space it was
+    # pretrained against. Independent of `real_weights` (both usually set
+    # together for `wan21_real_config()`, but toggleable separately). Only
+    # meaningful when `type == "wan"`; requires the `wan` extra.
+    real_vae: bool = False
     # HF repo/path for the UMT5 tokenizer + text encoder; defaults to the
     # ``text_encoder``/``tokenizer`` subfolders of ``checkpoint_path``.
     text_encoder_path: Optional[str] = None
@@ -211,6 +220,7 @@ def wan_real_scale_config(
 def wan21_real_config(
     checkpoint_path: Optional[str] = None,
     text_encoder_path: Optional[str] = None,
+    real_vae: bool = False,
 ) -> OrbisConfig:
     """OrbisConfig driving the REAL pretrained Wan2.1-1.3B transformer.
 
@@ -227,6 +237,13 @@ def wan21_real_config(
     ``model.depth``/``heads``/``mlp_ratio``/``patch_size`` are unused by
     ``RealWanBackbone`` (no custom DiT blocks are built) but kept populated
     for schema/CLI compatibility with the other Wan configs.
+
+    ``real_vae=True`` additionally swaps in Wan's own real, frozen,
+    pretrained ``AutoencoderKLWan`` (``orbis/adapters/wan21_vae.py``) in
+    place of orbis's toy ``ConvVAE`` -- closing the latent-distribution
+    fidelity gap documented above. Defaults to ``False`` to keep this
+    config's existing (CPU-testable, ConvVAE-based) behavior unchanged;
+    opt in via ``--real-wan-vae`` on ``scripts/train-live-wan.py``.
     """
     # Wan2.1-1.3B native training resolution; latent grid (480/8, 832/8) =
     # (60, 104), matching the real AutoencoderKLWan's x8 spatial compression.
@@ -248,6 +265,7 @@ def wan21_real_config(
         use_bf16=True,
         wan_stub=False,
         real_weights=True,
+        real_vae=real_vae,
     )
     serve = ServeConfig(fifo_capacity=4, drift_enabled=False)
     return OrbisConfig(
