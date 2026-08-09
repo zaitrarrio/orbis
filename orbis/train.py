@@ -45,7 +45,7 @@ def train_vae(system: OrbisSystem, steps: int = 800, batch: int = 64,
     t0 = time.time()
     _log(f"[vae] device {device_name(device)}", log_cb)
     for step in range(steps):
-        frames, _ = sampler.frame_batch(batch, 2)
+        frames, _, _ = sampler.frame_batch(batch, 2)
         x = frames_to_tensor(frames).reshape(batch * 2, 3, H, W).to(device)
         rec, _ = vae(x)
         bg = x.amin(dim=(2, 3), keepdim=True)
@@ -74,7 +74,7 @@ def train_vae(system: OrbisSystem, steps: int = 800, batch: int = 64,
         n = 0
         while n < cal_target:
             take = min(micro, cal_target - n)
-            frames, _ = sampler.frame_batch(take, 1)
+            frames, _, _ = sampler.frame_batch(take, 1)
             x = frames_to_tensor(frames).reshape(take, 3, H, W).to(device)
             # Raw encoder outputs (bypass latent_scale) for std estimate.
             vae.latent_scale.fill_(1.0)

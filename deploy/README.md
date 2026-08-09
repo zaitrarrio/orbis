@@ -165,5 +165,68 @@ wasn't what Wan was pretrained against — LoRA fine-tuning is expected to
 adapt the frozen transformer to this shift. Swapping in the real
 `AutoencoderKLWan` for the full pipeline is a larger, riskier change and is
 intentionally deferred to a follow-up PR (see PR description) to keep this
-change reviewable. Flow-GRPO/DanceGRPO-based RL post-training
-(Phase 1b) is also a separate, later PR.
+change reviewable.
+
+### Flow-GRPO / DanceGRPO-style RL post-training (Phase 1b)
+
+`orbis/posttrain/grpo.py` implements clipped-ratio GRPO over a *stochastic*
+reformulation of the rectified-flow sampler (`orbis/posttrain/flow_sde.py`),
+following [Flow-GRPO](https://arxiv.org/abs/2505.05470) and
+[DanceGRPO](https://arxiv.org/abs/2505.07818) (official DanceGRPO code:
+https://github.com/XueZeyue/DanceGRPO, which explicitly supports Wan2.1 via
+`scripts/finetune/finetune_wan_2_1_grpo.sh`). This replaces the earlier
+`grpo_align` (best-of-G self-distillation — group-relative advantages were
+computed correctly, but the "policy loss" was an L2 regression toward the
+winning candidate, not a real policy gradient; the previous
+`RewardBundle` scored every candidate against a withheld ground-truth
+latent, not a real pretrained reward model).
+
+What's new:
+
+* **`FlowSDE`** (`orbis/posttrain/flow_sde.py`) converts orbis's
+  deterministic Euler sampler into an equivalent SDE with a tractable
+  per-step Gaussian transition density (derivation and citations in the
+  module docstring; `eta=0` reduces exactly to the original deterministic
+  step — checked in `tests/test_flow_sde.py`). This is what makes the GRPO
+  importance ratio `rho = exp(logp_theta - logp_theta_old)` well-defined.
+* **Real reward models** (`orbis/posttrain/reward_models.py`):
+  `ClipAlignmentReward` (real pretrained CLIP image-text alignment,
+  `openai/clip-vit-base-patch32` by default) scores decoded pixel frames
+  against the batch's *raw* prompt text (`RolloutSampler` now also returns
+  `"prompts"` alongside `"text_ids"`, since CLIP's tokenizer is unrelated to
+  orbis's own canonical-token vocabulary). `AestheticReward` mirrors the
+  public LAION aesthetic-predictor architecture but ships **no bundled
+  checkpoint** — pass a real one via `checkpoint_path`, or it refuses to run
+  unless you explicitly opt into an untrained head for shape-testing only.
+  `MockReward` is network-free and CPU-testable but meaningless — used only
+  in `tests/test_grpo_real.py` and as the pipeline's `--grpo-reward mock`
+  default (safe for `--smoke`/CI).
+* Orbis's own reference-identity and temporal-smoothness continuity terms
+  are kept as auxiliary reward components (`CompositeReward`) since they
+  compare a rollout to its own reference/history, not to a withheld
+  ground-truth target — they didn't need to be replaced.
+* New `GRPOConfig` (`orbis/config.py`): `sde_eta`, `clip_eps`, `kl_coef`,
+  `train_denoise_steps` (Flow-GRPO's "Denoising Reduction" — fewer steps at
+  RL-rollout time than final inference), `reward_backend`.
+
+```bash
+# CPU-testable, network-free (default -- matches --smoke/CI):
+uv run python scripts/train-live-wan.py orbis-wan.pt 0.1 --smoke
+
+# Real reward model (downloads a pretrained CLIP checkpoint on first run):
+uv run python scripts/train-live-wan.py orbis-real-wan.pt 0.1 --real-wan --grpo-reward clip
+
+# Tune SDE exploration noise if rollouts look degenerate/unstable:
+uv run python scripts/train-live-wan.py orbis-real-wan.pt 0.1 --real-wan --grpo-reward clip --grpo-eta 0.5
+```
+
+CPU unit tests (`tests/test_flow_sde.py`, `tests/test_grpo_real.py`) cover
+the SDE derivation invariants (ODE-equivalence at `eta=0`, log-prob/KL
+correctness, ratio=1 when policies match) and the GRPO loop itself
+(gradient isolation to trainable params only, finite loss, group-relative
+advantage bookkeeping) using `wan_smoke_config()` + `MockReward` — no GPU or
+network access required. As with the real-Wan backbone above, please run a
+short real-GPU pass (`--grpo-reward clip`) on your rented pod to confirm the
+CLIP download/preprocessing path and inspect real reward values and
+sample rollouts; this sandbox has no GPU and no network access to fetch
+pretrained CLIP weights.
