@@ -142,6 +142,15 @@ def main():
                     help="Resume/finetune from checkpoint (skips VAE train)")
     ap.add_argument("--finetune-steps", type=int, default=0,
                     help="If --resume, run this many stream steps (0=scale defaults)")
+    ap.add_argument("--grpo-reward", choices=["mock", "clip"], default="mock",
+                    help="GRPO reward backend (Phase 1b): 'mock' is network-free "
+                         "and CPU-testable but meaningless (default, safe for "
+                         "--smoke/CI); 'clip' downloads a pretrained CLIP "
+                         "checkpoint and computes real image-text alignment "
+                         "reward -- use for real training runs.")
+    ap.add_argument("--grpo-eta", type=float, default=None,
+                    help="GRPO SDE exploration noise scale (default: "
+                         "GRPOConfig.sde_eta=0.3). Must be > 0.")
     args = ap.parse_args()
 
     device = get_device()
@@ -162,6 +171,9 @@ def main():
         cfg = wan_real_scale_config(stub=not args.load_hf)
     if args.load_hf:
         cfg.backbone.wan_stub = False
+    cfg.grpo.reward_backend = args.grpo_reward
+    if args.grpo_eta is not None:
+        cfg.grpo.sde_eta = args.grpo_eta
 
     curriculum = bool(args.curriculum)
     micro = bool(args.micro)
@@ -310,7 +322,7 @@ def main():
             _gc()
             grpo_align(system, lambda: batch_fn("history"),
                        steps=s(20 if args.smoke else 50),
-                       group_size=2)
+                       group_size=2, eta=cfg.grpo.sde_eta)
         except torch.cuda.OutOfMemoryError as e:
             print(f"[wan-live] post-train OOM ({e}); keeping prior weights")
             _gc()

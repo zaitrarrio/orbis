@@ -34,17 +34,26 @@ class RolloutSampler:
 
     # -- raw frames -----------------------------------------------------------
     def frame_batch(self, batch: int, n_frames: int):
-        """Return ``(frames[B,F,H,W,3], token_ids[B,L])`` for random scenes."""
+        """Return ``(frames[B,F,H,W,3], token_ids[B,L], prompts[B])`` for random scenes.
+
+        ``prompts`` are the raw natural-language captions (before orbis's own
+        canonical-token encoding) -- needed by real pretrained reward models
+        (e.g. CLIP) that have their own tokenizer/vocabulary and can't consume
+        ``token_ids`` from :class:`orbis.text.PromptTokenizer`.
+        """
         from .text import PromptTokenizer
         tok = PromptTokenizer(self.cfg.model.text_len)
         frames = np.empty((batch, n_frames, self.H, self.W, 3), dtype=np.float32)
         ids = np.empty((batch, self.cfg.model.text_len), dtype=np.int64)
+        prompts: list[str] = []
         for b in range(batch):
             spec = sample_scene(self.rng)
             fr, _ = rollout(spec, n_frames, self.H, self.W)
             frames[b] = fr
-            ids[b] = tok.encode(spec.control_prompt())
-        return frames, ids
+            prompt = spec.control_prompt()
+            ids[b] = tok.encode(prompt)
+            prompts.append(prompt)
+        return frames, ids, prompts
 
     @torch.no_grad()
     def encode(self, frames: np.ndarray) -> torch.Tensor:
@@ -65,23 +74,23 @@ class RolloutSampler:
         hf = history_frames if history_frames is not None else cfg.model.history_frames
 
         if mode == "text_only":
-            frames, ids = self.frame_batch(batch, cf)
+            frames, ids, prompts = self.frame_batch(batch, cf)
             z = self.encode(frames)
             return {"target": z, "text_ids": torch.as_tensor(ids),
                     "history": None, "reference": None,
-                    "evicted": None, "mode": mode}
+                    "evicted": None, "mode": mode, "prompts": prompts}
 
         if mode == "reference":
-            frames, ids = self.frame_batch(batch, 1 + cf)
+            frames, ids, prompts = self.frame_batch(batch, 1 + cf)
             z = self.encode(frames)
             return {"target": z[:, 1:], "text_ids": torch.as_tensor(ids),
                     "history": None, "reference": z[:, :1],
-                    "evicted": None, "mode": mode}
+                    "evicted": None, "mode": mode, "prompts": prompts}
 
         # history / streaming mode
         n_evict = memory_context_chunks * cf
         total = n_evict + hf + cf
-        frames, ids = self.frame_batch(batch, total)
+        frames, ids, prompts = self.frame_batch(batch, total)
         z = self.encode(frames)
         evicted = z[:, :n_evict] if n_evict > 0 else None
         history = z[:, n_evict:n_evict + hf]
@@ -90,4 +99,4 @@ class RolloutSampler:
             history = history + history_noise * torch.randn_like(history)
         return {"target": target, "text_ids": torch.as_tensor(ids),
                 "history": history, "reference": None,
-                "evicted": evicted, "mode": mode}
+                "evicted": evicted, "mode": mode, "prompts": prompts}

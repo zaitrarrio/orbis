@@ -111,6 +111,36 @@ class ServeConfig:
 
 
 @dataclass
+class GRPOConfig:
+    """Phase 1b: Flow-GRPO (arXiv:2505.05470) / DanceGRPO (arXiv:2505.07818)
+    clipped-ratio RL over a stochastic (SDE) flow-matching rollout.
+
+    See ``orbis/posttrain/flow_sde.py`` for the ODE->SDE derivation and
+    ``orbis/posttrain/grpo.py`` for the training loop.
+    """
+
+    # Exploration noise scale for the SDE reformulation (g(sigma) = sde_eta *
+    # sigma). Must be > 0 for a well-defined importance ratio; sde_eta=0
+    # degenerates to the original deterministic ODE (no valid transition
+    # density -- use FlowSDE only for GRPO training, not plain inference).
+    sde_eta: float = 0.3
+    # PPO/GRPO clipped-surrogate epsilon.
+    clip_eps: float = 0.2
+    # KL(new || old) regularization weight against the frozen policy snapshot.
+    kl_coef: float = 0.02
+    # Flow-GRPO's "Denoising Reduction": fewer steps at RL-rollout time than
+    # at final inference (cfg.flow.teacher_steps), to cut rollout cost.
+    train_denoise_steps: int = 4
+    # "mock" (no network, CPU-testable, meaningless reward values -- tests
+    # only) or "clip" (real pretrained CLIP image-text alignment reward).
+    reward_backend: str = "mock"
+    # Auxiliary continuity reward weights (computed directly in latent space
+    # against the rollout's own reference/history, no ground-truth target).
+    w_reference: float = 0.25
+    w_motion: float = 0.15
+
+
+@dataclass
 class OrbisConfig:
     world: WorldConfig = field(default_factory=WorldConfig)
     vae: VAEConfig = field(default_factory=VAEConfig)
@@ -119,6 +149,7 @@ class OrbisConfig:
     sr: SRConfig = field(default_factory=SRConfig)
     backbone: BackboneConfig = field(default_factory=BackboneConfig)
     serve: ServeConfig = field(default_factory=ServeConfig)
+    grpo: GRPOConfig = field(default_factory=GRPOConfig)
     seed: int = 0
 
     @property
@@ -139,6 +170,7 @@ class OrbisConfig:
             sr=SRConfig(**d.get("sr", {})),
             backbone=BackboneConfig(**d.get("backbone", {})),
             serve=ServeConfig(**d.get("serve", {})),
+            grpo=GRPOConfig(**d.get("grpo", {})),
             seed=d.get("seed", 0),
         )
 
