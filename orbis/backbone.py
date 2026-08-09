@@ -76,7 +76,18 @@ class LoRALinear(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.base(x)
         if self.lora_a is not None:
-            out = out + self.lora_b(self.lora_a(x)) * self.scaling
+            # LoRA A/B are created at default (float32) precision even when
+            # wrapping a lower-precision (e.g. bf16) frozen `base` -- this
+            # matches common LoRA/PEFT practice of keeping trainable adapter
+            # weights in float32 for optimizer stability while the frozen
+            # base runs in bf16/fp16. Up-cast at the LoRA boundary and
+            # down-cast the delta back to `out`'s dtype before adding, so
+            # this is a no-op when `x`/`base` are already float32 (the CPU
+            # mock-transformer tests) and correct when they're not (real
+            # bf16 Wan weights on GPU).
+            lora_dtype = self.lora_a.weight.dtype
+            delta = self.lora_b(self.lora_a(x.to(lora_dtype)))
+            out = out + delta.to(out.dtype) * self.scaling
         return out
 
     def mergeable_state_dict(self) -> dict:
