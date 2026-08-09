@@ -380,7 +380,26 @@ class RealWanBackbone(nn.Module):
         # never exercises this path. Upcast/downcast at this single
         # boundary rather than changing storage dtype anywhere else, so
         # gradients still accumulate in the caller's (float32) precision.
-        base_dtype = next(self.transformer.parameters()).dtype
+        #
+        # NOTE: don't use `next(self.transformer.parameters()).dtype` here --
+        # diffusers' `_keep_in_fp32_modules` mechanism deliberately keeps a
+        # handful of numerically-sensitive params (e.g. `scale_shift_table`,
+        # `condition_embedder.time_embedder.*`) in float32 even when the
+        # rest of the model is loaded in bf16, and (depending on module
+        # registration order) one of those float32 params can legitimately
+        # be the very first item `.parameters()` yields -- silently
+        # producing the wrong "base_dtype" and re-triggering this exact
+        # crash (confirmed on a real H100: `scale_shift_table` came first).
+        # The real `WanTransformer3DModel` exposes `patch_embedding` (the
+        # literal first layer `hidden_states` is fed through, never one of
+        # the kept-in-fp32 modules) -- use its weight dtype when available,
+        # falling back to the generic heuristic for the small
+        # CPU mock transformer in tests/test_wan21_real_adapter.py, which
+        # has no `patch_embedding` attribute and is float32 throughout
+        # anyway.
+        patch_embed = getattr(self.transformer, "patch_embedding", None)
+        base_dtype = (patch_embed.weight.dtype if patch_embed is not None
+                      else next(self.transformer.parameters()).dtype)
         hidden_states = hidden_states.to(base_dtype)
         encoder_hidden_states = encoder_hidden_states.to(base_dtype)
 
