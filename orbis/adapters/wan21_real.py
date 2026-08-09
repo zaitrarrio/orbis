@@ -460,6 +460,14 @@ class RealWanBackbone(nn.Module):
         transformer = WanTransformer3DModel.from_pretrained(
             backbone_cfg.checkpoint_path, subfolder="transformer",
             torch_dtype=dtype)
+        if getattr(backbone_cfg, "wan_gradient_checkpointing", True):
+            # Wan's own block count x ~20k-token sequences at
+            # wan21_real_config() scale (13 concatenated history/reference/
+            # chunk frames at 480x832) otherwise OOM a 96GB H100 by holding
+            # every layer's activations for backward -- confirmed on real
+            # hardware. `enable_gradient_checkpointing` is a standard
+            # diffusers ModelMixin method.
+            transformer.enable_gradient_checkpointing()
 
         text_path = backbone_cfg.text_encoder_path or backbone_cfg.checkpoint_path
         tokenizer = AutoTokenizer.from_pretrained(text_path, subfolder="tokenizer")

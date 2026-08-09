@@ -88,6 +88,16 @@ class BackboneConfig:
     # Wan2.1's FlowMatchEulerDiscreteScheduler training horizon; used to
     # rescale orbis's sigma in [0, 1] into Wan's own timestep space.
     wan_num_train_timesteps: int = 1000
+    # Enable WanTransformer3DModel's built-in activation checkpointing for
+    # RealWanBackbone (real_weights=True). At wan21_real_config()'s full
+    # 480x832 / 13-frame (4 chunk + 8 history + 1 reference) scale, Wan's
+    # own ~1560-token-per-frame patchify yields long enough sequences
+    # (~20k tokens) that saving every layer's activations for backward
+    # OOMs even a 96GB H100 -- confirmed on real hardware via
+    # scripts/validate_real_wan.py. Default on since it is the only
+    # currently-wired way to make wan21_real_config() actually fit; costs
+    # ~20-30% more compute time for the recomputation.
+    wan_gradient_checkpointing: bool = True
 
 
 @dataclass
