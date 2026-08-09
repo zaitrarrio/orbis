@@ -147,6 +147,14 @@ class GRPOConfig:
     # against the rollout's own reference/history, no ground-truth target).
     w_reference: float = 0.25
     w_motion: float = 0.15
+    # Cross-chunk boundary continuity: compares the new chunk's first
+    # `boundary_frames` latent frame(s) to the last `boundary_frames` of
+    # `history` (the seam between committed context and the fresh rollout).
+    # w_motion alone only measures smoothness *inside* the new chunk and is
+    # blind to a discontinuous jump right at that seam -- see
+    # orbis/posttrain/rewards.py::boundary_continuity_reward.
+    w_boundary: float = 0.15
+    boundary_frames: int = 1
 
 
 @dataclass

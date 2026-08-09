@@ -30,10 +30,11 @@ papers score their rollouts:
   tests only. Never claims to measure anything real.
 * :class:`CompositeReward` -- weighted sum of pixel-space reward components
   plus orbis's own *legitimate* auxiliary continuity terms (reference
-  identity, temporal smoothness), which are reused as-is since they compare
-  a rollout to its own reference/history rather than to a withheld
-  ground-truth target, and remain useful continuity signals for this
-  streaming-video task.
+  identity, intra-chunk temporal smoothness, and cross-chunk boundary
+  continuity -- see ``w_boundary`` below), which are reused as-is since
+  they compare a rollout to its own reference/history rather than to a
+  withheld ground-truth target, and remain useful continuity signals for
+  this streaming-video task.
 
 All reward models are used purely as scalar (black-box) rewards -- GRPO's
 policy gradient flows through the *sampling* log-probabilities (see
@@ -253,10 +254,22 @@ class AestheticReward(RewardModel):
 
 class CompositeReward(RewardModel):
     """Weighted sum of pixel-space reward components plus latent-space
-    continuity auxiliaries (reference-identity, temporal smoothness) reused
-    from :mod:`orbis.posttrain.rewards` -- those terms need no ground-truth
+    continuity auxiliaries (reference-identity, intra-chunk temporal
+    smoothness, cross-chunk boundary continuity) reused from
+    :mod:`orbis.posttrain.rewards` -- those terms need no ground-truth
     target, only the rollout's own reference/history, so they remain valid
     signals here.
+
+    ``w_boundary`` (default 0.0, opt-in like ``w_reference``/``w_motion``)
+    compares the new chunk's first ``boundary_frames`` latent frame(s) to
+    the *last* ``boundary_frames`` frame(s) of ``history`` -- i.e. the seam
+    between what was already committed to the live session and what GRPO
+    just rolled out. ``w_motion`` alone only measures smoothness *inside*
+    the new chunk and is blind to a discontinuous jump right at that seam;
+    see ``orbis.posttrain.rewards.boundary_continuity_reward`` for the
+    rationale. Requires the caller to pass ``history=...`` to ``forward``
+    (e.g. ``orbis/posttrain/grpo.py`` passes the same ``history`` tensor
+    used to build this rollout's conditioning context).
 
     ``forward`` returns ``(total_reward[B], detail_dict)`` (matching the
     previous ``RewardBundle`` interface for compatibility with existing
@@ -264,16 +277,20 @@ class CompositeReward(RewardModel):
     """
 
     def __init__(self, components: Sequence[Tuple[RewardModel, float]],
-                 w_reference: float = 0.0, w_motion: float = 0.0):
+                 w_reference: float = 0.0, w_motion: float = 0.0,
+                 w_boundary: float = 0.0, boundary_frames: int = 1):
         super().__init__()
         self.components = nn.ModuleList([c for c, _ in components])
         self.weights = [w for _, w in components]
         self.w_reference = w_reference
         self.w_motion = w_motion
+        self.w_boundary = w_boundary
+        self.boundary_frames = boundary_frames
 
     def forward(self, frames: torch.Tensor, prompts: Optional[Sequence[str]] = None,
                 latent_chunk: Optional[torch.Tensor] = None,
                 reference: Optional[torch.Tensor] = None,
+                history: Optional[torch.Tensor] = None,
                 **kwargs) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         b = frames.shape[0]
         device = frames.device
@@ -298,5 +315,13 @@ class CompositeReward(RewardModel):
             r = -d.pow(2).flatten(1).mean(dim=1)
             total = total + self.w_motion * r
             detail["motion_smooth"] = r.detach().mean()
+
+        if self.w_boundary and latent_chunk is not None and history is not None \
+                and history.numel() > 0:
+            from orbis.posttrain.rewards import boundary_continuity_reward
+            r = boundary_continuity_reward(latent_chunk, history,
+                                           n_frames=self.boundary_frames)
+            total = total + self.w_boundary * r
+            detail["boundary_smooth"] = r.detach().mean()
 
         return total, detail

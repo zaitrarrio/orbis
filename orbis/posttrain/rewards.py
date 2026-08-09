@@ -99,6 +99,44 @@ def reference_identity_reward(
     return -err
 
 
+def boundary_continuity_reward(
+    chunk: torch.Tensor, history: Optional[torch.Tensor], n_frames: int = 1
+) -> torch.Tensor:
+    """Penalize a discontinuous jump at the chunk-boundary seam.
+
+    ``orbis.posttrain.reward_models.CompositeReward``'s existing
+    ``motion_smooth`` term only measures frame-to-frame smoothness *inside*
+    a single rolled-out chunk -- it never compares the new chunk's first
+    frame(s) to the *last committed* frame(s) of ``history`` (the running
+    context every chunk is conditioned on via ``OrbisSystem.encode_context``,
+    see ``orbis/engine.py::LiveEngine._commit``). A policy can therefore
+    raise this per-chunk reward in ways that are invisible right at the
+    seam between chunks -- exactly the failure mode the multi-chunk
+    streaming engine cares about most, since ``memory_state``/``history``
+    compound that discontinuity into every following chunk.
+
+    Compares the last ``n_frames`` of ``history`` to the first ``n_frames``
+    of ``chunk`` in latent space (higher is better, i.e. negative squared
+    distance -- same sign convention as every other reward here). Returns
+    zeros (no boundary signal) when there is no history yet, e.g. the very
+    first chunk of a session, matching ``reference_identity_reward``'s
+    None-handling convention.
+    """
+    if history is None or history.numel() == 0:
+        return torch.zeros(chunk.shape[0], device=chunk.device)
+    n = min(n_frames, history.shape[1], chunk.shape[1])
+    if n <= 0:
+        return torch.zeros(chunk.shape[0], device=chunk.device)
+    last_hist = history[:, -n:]
+    first_chunk = chunk[:, :n]
+    if last_hist.shape[-2:] != first_chunk.shape[-2:]:
+        last_hist = F.adaptive_avg_pool2d(
+            last_hist.flatten(0, 1), first_chunk.shape[-2:]).view(
+            first_chunk.shape[0], n, first_chunk.shape[2], *first_chunk.shape[-2:])
+    d = first_chunk - last_hist
+    return -d.pow(2).flatten(1).mean(dim=1)
+
+
 def world_model_consistency_reward(
     chunk: torch.Tensor, wm_pred: torch.Tensor
 ) -> torch.Tensor:

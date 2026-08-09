@@ -20,7 +20,10 @@ This module implements the real thing, following Flow-GRPO
   3. Decode each trajectory's final chunk to pixels and score it with a
      real reward model (default in production: CLIP image-text alignment;
      see ``orbis/posttrain/reward_models.py``) plus orbis's own
-     reference/motion continuity terms.
+     reference/motion continuity terms, including a cross-chunk boundary
+     continuity term (``w_boundary``) that compares the new chunk's seam
+     against the actual committed ``history`` this rollout was conditioned
+     on -- ``w_motion`` alone only sees smoothness *inside* the new chunk.
   4. Compute group-relative advantages ``A_i = (R_i - mean(R)) / std(R)``
      (unchanged from the earlier implementation -- this part was already
      correct GRPO bookkeeping).
@@ -63,14 +66,18 @@ def _default_reward(cfg) -> CompositeReward:
     clip = ClipAlignmentReward()
     return CompositeReward([(clip, 1.0)],
                            w_reference=cfg.grpo.w_reference,
-                           w_motion=cfg.grpo.w_motion)
+                           w_motion=cfg.grpo.w_motion,
+                           w_boundary=cfg.grpo.w_boundary,
+                           boundary_frames=cfg.grpo.boundary_frames)
 
 
 def _mock_reward(cfg) -> CompositeReward:
     """CPU-testable, network-free reward. Never use for real training."""
     return CompositeReward([(MockReward(), 1.0)],
                            w_reference=cfg.grpo.w_reference,
-                           w_motion=cfg.grpo.w_motion)
+                           w_motion=cfg.grpo.w_motion,
+                           w_boundary=cfg.grpo.w_boundary,
+                           boundary_frames=cfg.grpo.boundary_frames)
 
 
 def grpo_align(
@@ -176,7 +183,7 @@ def grpo_align(
                 except Exception:
                     frames = chunk  # fallback: score in latent space if decode fails
                 r, d = reward_model(frames, prompts=prompts, latent_chunk=chunk,
-                                    reference=reference)
+                                    reference=reference, history=history)
                 detail = d
                 score_list.append(r)
         scores = torch.stack(score_list, dim=1)  # (B, G)
